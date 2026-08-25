@@ -1,0 +1,8 @@
+pandas
+openpyxl
+xlsxwriter
+python-dotenv
+google-genai
+docxtpl
+requests
+selenium
