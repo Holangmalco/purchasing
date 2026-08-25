@@ -38,7 +38,7 @@ def main_dashboard():
 
 # 3. 각 페이지(파일)를 깔끔하게 정의하고 아이콘 달기
 p_main = st.Page(main_dashboard, title="메인 대시보드", icon="🏠", default=True)
-p1 = st.Page("pages/1_구매추출기_3.py", title="구매/계약 추출기", icon="💰")
+p1 = st.Page("pages/1_구매추출기.py", title="구매/계약 추출기", icon="💰")
 p2 = st.Page("pages/2_스크래퍼.py", title="ERP 스크래퍼", icon="🤖")
 p3 = st.Page("pages/3_재산증감보고.py", title="재산증감 보고", icon="📊")
 
