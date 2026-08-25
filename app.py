@@ -32,14 +32,13 @@ def main_dashboard():
     st.write("2. **ERP 스크래퍼:** 버튼 한 번으로 결재 대기함의 구매요청 문서를 솎아냅니다.")
     st.write("3. **재산증감 보고:** rERP 엑셀 데이터를 업로드하면 월별 증감통계가 자동 생성됩니다.")
 
-# 3. 각 페이지 정의 (메뉴 이름은 네이버처럼 짧게!)
-# 💡 팁: icon="💰" 대신 icon=":material/shopping_cart:" 처럼 머티리얼 코드를 넣으면 더 깔끔해집니다.
+# 3. 각 페이지 정의 (경로에 pages/ 다시 추가!)
 p_main = st.Page(main_dashboard, title="홈", icon="🏠", default=True)
-p1 = st.Page("1_구매추출기.py", title="구매/계약", icon="💰")
-p2 = st.Page("2_스크래퍼.py", title="스크래퍼", icon="🤖")
-p3 = st.Page("3_재산증감보고.py", title="재산증감", icon="📊")
+p1 = st.Page("pages/1_구매추출기.py", title="구매/계약", icon="💰")
+p2 = st.Page("pages/2_스크래퍼.py", title="스크래퍼", icon="🤖")
+p3 = st.Page("pages/3_재산증감보고.py", title="재산증감", icon="📊")
 
-# 4. ★핵심★ 딕셔너리가 아닌 리스트로 묶어서 가로로 쫙 펼치기
+# 4. ★핵심★ 리스트로 묶어서 네이버처럼 가로로 쫙 펼치기
 pg = st.navigation(
     [p_main, p1, p2, p3],
     position="top"
