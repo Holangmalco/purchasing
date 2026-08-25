@@ -613,7 +613,7 @@ if menu == "📋 구매요청 분석":
             
     with col_in2:
         with st.container(border=True):
-            st.markdown("#### 📎 3. AI 교차검증용 서류")
+            st.markdown("#### 📎 3. AI OCR")
             st.caption("견적서 및 사업자등록증 (드래그 앤 드롭)")
             
             if "file_key" not in st.session_state: st.session_state["file_key"] = 0
