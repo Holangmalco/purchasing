@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 
 # 1. 전체 페이지 기본 설정
 st.set_page_config(page_title="구매부서 통합 대시보드", page_icon="🏫", layout="wide")
@@ -16,9 +17,11 @@ def main_dashboard():
         st.metric(label="이번 주 신규 구매요청", value="N 건", delta="계약 중 N'건")
         
     with col2:
-        st.subheader("📜 입찰 캘린더 (예시)")
-        st.success("💡 담당자 데이터 연동 및 일정표 구현 예정")
-        st.date_input("입찰 주요 일정 확인", value="today")
+        st.subheader("📜 입찰 캘린더")
+        # 방금 가져온 주소(src)를 여기에 쏙!
+        calendar_url = "https://calendar.google.com/calendar/embed?src=hagrid15303%40gmail.com&ctz=Asia%2FSeoul"
+        # width(너비)와 height(높이)는 대시보드 화면에 맞게 숫자 바꿔서 조절해 줘
+        components.iframe(calendar_url, width=450, height=400)
         
     with col3:
         st.subheader("🏢 자산관리 현황 (예시)")
