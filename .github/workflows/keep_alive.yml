@@ -11,6 +11,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Visit Streamlit App
+      - name: Wake up Streamlit App
         run: |
-          curl --max-time 300 "https://iacf-purchasing.streamlit.app/"
+          curl -I --max-time 300 "https://iacf-purchasing.streamlit.app/" || true
