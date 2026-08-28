@@ -1,0 +1,16 @@
+name: Keep Streamlit Alive
+
+on:
+  schedule:
+    - cron: "0 */10 * * *"
+
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Visit Streamlit App
+        run: |
+          curl -L --max-time 300 "https://iacf-purchasing.streamlit.app/"
