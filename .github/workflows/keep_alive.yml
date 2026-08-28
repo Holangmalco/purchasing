@@ -2,7 +2,7 @@ name: Keep Streamlit Alive
 
 on:
   schedule:
-    - cron: "0 */10 * * *"
+    - cron: "0 */8 * * *"
 
   workflow_dispatch:
 
@@ -13,4 +13,4 @@ jobs:
     steps:
       - name: Visit Streamlit App
         run: |
-          curl -L --max-time 300 "https://iacf-purchasing.streamlit.app/"
+          curl --max-time 300 "https://iacf-purchasing.streamlit.app/"
