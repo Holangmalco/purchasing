@@ -2,7 +2,7 @@ name: Keep Streamlit Alive
 
 on:
   schedule:
-    - cron: "0 */8 * * *"
+    - cron: "17 */8 * * *"
 
   workflow_dispatch:
 
@@ -11,6 +11,120 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Wake up Streamlit App
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright
         run: |
-          curl -I --max-time 300 "https://iacf-purchasing.streamlit.app/" || true
+          npm init -y
+          npm install playwright
+          npx playwright install --with-deps chromium
+
+      - name: Visit Streamlit App
+        run: |
+          node <<'EOF'
+          const { chromium } = require('playwright');
+
+          (async () => {
+
+            const browser = await chromium.launch({
+              headless: true
+            });
+
+            const page = await browser.newPage();
+
+            console.log('================================');
+            console.log('Opening Streamlit app...');
+            console.log('================================');
+
+            await page.goto(
+              'https://iacf-purchasing.streamlit.app/',
+              {
+                waitUntil: 'domcontentloaded',
+                timeout: 300000
+              }
+            );
+
+            // 메인 페이지 로딩 대기
+            await page.waitForTimeout(10000);
+
+            console.log('Home page loaded.');
+
+            // 상단 메뉴에서 구매/계약 페이지 이동
+            console.log('Opening 구매/계약...');
+
+            await page.getByText(
+              '구매/계약',
+              { exact: true }
+            ).click({
+              timeout: 30000
+            });
+
+            await page.waitForTimeout(10000);
+
+            console.log('구매/계약 page loaded.');
+
+            // 랜덤 방문할 메뉴
+            const menus = [
+              '구매요청 분석',
+              '구매계약 분석',
+              '분석내용 불러오기'
+            ];
+
+            // 3개 중 하나 랜덤 선택
+            const selectedMenu =
+              menus[Math.floor(Math.random() * menus.length)];
+
+            console.log('--------------------------------');
+            console.log(`Randomly selected: ${selectedMenu}`);
+            console.log('--------------------------------');
+
+            try {
+
+              console.log(`Opening: ${selectedMenu}`);
+
+              await page.getByText(
+                selectedMenu,
+                { exact: true }
+              ).click({
+                timeout: 30000
+              });
+
+              console.log(
+                `${selectedMenu} clicked successfully.`
+              );
+
+              // 실제 페이지 활성화 상태 유지
+              await page.waitForTimeout(20000);
+
+              console.log(
+                `${selectedMenu} visit completed.`
+              );
+
+            } catch (error) {
+
+              console.log(
+                `WARNING: Could not click ${selectedMenu}`
+              );
+
+              console.log(error.message);
+
+            }
+
+            console.log('Waiting before closing...');
+
+            await page.waitForTimeout(10000);
+
+            await browser.close();
+
+            console.log('================================');
+            console.log('Streamlit activity completed.');
+            console.log('================================');
+
+          })();
+          EOF
