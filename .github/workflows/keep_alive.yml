@@ -2,8 +2,11 @@ name: Keep Streamlit Alive
 
 on:
   schedule:
+    # 8시간마다 실행
+    # GitHub Actions의 cron은 UTC 기준
     - cron: "17 */8 * * *"
 
+  # GitHub Actions에서 수동 실행 가능
   workflow_dispatch:
 
 jobs:
@@ -11,36 +14,66 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # GitHub 저장소 코드 가져오기
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
+      # Node.js 설치
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+
+      # Playwright 및 Chromium 설치
       - name: Install Playwright
         run: |
           npm init -y
           npm install playwright
           npx playwright install --with-deps chromium
 
-      - name: Visit Streamlit App
+
+      # Streamlit 앱 접속 및 자동 Wake-up
+      - name: Visit and wake Streamlit App
         run: |
           node <<'EOF'
+
           const { chromium } = require('playwright');
 
           (async () => {
+
+            console.log('========================================');
+            console.log('Starting Streamlit keep-alive process');
+            console.log('========================================');
+
+
+            // ========================================
+            // 브라우저 실행
+            // ========================================
 
             const browser = await chromium.launch({
               headless: true
             });
 
+
             const page = await browser.newPage();
 
-            console.log('================================');
-            console.log('Opening Streamlit app...');
-            console.log('================================');
+
+            await page.setViewportSize({
+              width: 1920,
+              height: 1080
+            });
+
+
+            // ========================================
+            // 1. Streamlit 앱 접속
+            // ========================================
+
+            console.log('');
+            console.log('[1] Opening Streamlit app...');
+
 
             await page.goto(
               'https://iacf-purchasing.streamlit.app/',
@@ -50,81 +83,332 @@ jobs:
               }
             );
 
-            // 메인 페이지 로딩 대기
-            await page.waitForTimeout(10000);
 
-            console.log('Home page loaded.');
+            console.log('Page opened.');
 
-            // 상단 메뉴에서 구매/계약 페이지 이동
-            console.log('Opening 구매/계약...');
+            // 초기 화면 렌더링 시간
+            await page.waitForTimeout(3000);
 
-            await page.getByText(
-              '구매/계약',
-              { exact: true }
-            ).click({
-              timeout: 30000
-            });
 
-            await page.waitForTimeout(10000);
+            // ========================================
+            // 2. Sleep 상태 확인
+            // ========================================
 
-            console.log('구매/계약 page loaded.');
+            console.log('');
+            console.log('[2] Checking app status...');
 
-            // 랜덤 방문할 메뉴
-            const menus = [
-              '구매요청 분석',
-              '구매계약 분석',
-              '분석내용 불러오기'
-            ];
 
-            // 3개 중 하나 랜덤 선택
-            const selectedMenu =
-              menus[Math.floor(Math.random() * menus.length)];
+            const wakeButton = page.getByRole(
+              'button',
+              {
+                name: 'Yes, get this app back up!'
+              }
+            );
 
-            console.log('--------------------------------');
-            console.log(`Randomly selected: ${selectedMenu}`);
-            console.log('--------------------------------');
+
+            let isSleeping = false;
+
+
+            // 최대 7초 동안 Wake-up 버튼이 나타나는지 확인
+            try {
+
+              await wakeButton.waitFor({
+                state: 'visible',
+                timeout: 7000
+              });
+
+
+              isSleeping = true;
+
+
+            } catch (error) {
+
+              isSleeping = false;
+
+            }
+
+
+            // ========================================
+            // 3. Sleep 상태면 Wake-up
+            // ========================================
+
+            if (isSleeping) {
+
+              console.log('');
+              console.log('========================================');
+              console.log('APP IS SLEEPING!');
+              console.log('Wake-up button detected.');
+              console.log('========================================');
+
+
+              console.log('Clicking wake-up button...');
+
+
+              await wakeButton.click({
+                timeout: 30000
+              });
+
+
+              console.log('Wake-up button clicked.');
+              console.log('Waiting for Streamlit app to start...');
+
+
+              // 최대 3분 동안 정상 메뉴가 나타나는지 확인
+              try {
+
+                await page.getByText(
+                  /구매\/계약/
+                ).waitFor({
+                  state: 'visible',
+                  timeout: 180000
+                });
+
+
+                console.log('');
+                console.log('========================================');
+                console.log('APP SUCCESSFULLY WOKE UP!');
+                console.log('========================================');
+
+
+              } catch (error) {
+
+                console.log('');
+                console.log('========================================');
+                console.log('ERROR: App did not fully start.');
+                console.log(error.message);
+                console.log('========================================');
+
+
+                await browser.close();
+
+                process.exit(1);
+
+              }
+
+
+            } else {
+
+              console.log('Wake-up button not detected.');
+              console.log('App appears to already be awake.');
+
+            }
+
+
+            // ========================================
+            // 4. 정상적인 앱 화면인지 확인
+            // ========================================
+
+            console.log('');
+            console.log('[3] Confirming normal app screen...');
+
 
             try {
 
-              console.log(`Opening: ${selectedMenu}`);
-
               await page.getByText(
-                selectedMenu,
-                { exact: true }
-              ).click({
+                /구매\/계약/
+              ).waitFor({
+                state: 'visible',
+                timeout: 60000
+              });
+
+
+              console.log(
+                'Main app navigation confirmed.'
+              );
+
+
+            } catch (error) {
+
+              console.log('');
+              console.log('========================================');
+              console.log(
+                'ERROR: Could not confirm normal app screen.'
+              );
+              console.log(error.message);
+              console.log('========================================');
+
+
+              await browser.close();
+
+              process.exit(1);
+
+            }
+
+
+            // ========================================
+            // 5. 상단 메뉴 "구매/계약" 클릭
+            // ========================================
+
+            console.log('');
+            console.log('[4] Opening 구매/계약...');
+
+
+            const purchaseMenu = page.getByText(
+              /구매\/계약/
+            );
+
+
+            await purchaseMenu.click({
+              timeout: 30000
+            });
+
+
+            console.log(
+              '구매/계약 clicked successfully.'
+            );
+
+
+            // 페이지 전환 대기
+            await page.waitForTimeout(8000);
+
+
+            // ========================================
+            // 6. 랜덤으로 방문할 메뉴 선택
+            // ========================================
+
+            const menus = [
+
+              '구매요청 분석',
+
+              '구매계약 분석',
+
+              '분석내용 불러오기'
+
+            ];
+
+
+            const randomIndex = Math.floor(
+              Math.random() * menus.length
+            );
+
+
+            const selectedMenu =
+              menus[randomIndex];
+
+
+            console.log('');
+            console.log('========================================');
+            console.log(
+              `Randomly selected: ${selectedMenu}`
+            );
+            console.log('========================================');
+
+
+            // ========================================
+            // 7. 랜덤 선택된 메뉴 클릭
+            // ========================================
+
+            console.log('');
+            console.log(
+              `[5] Opening ${selectedMenu}...`
+            );
+
+
+            try {
+
+              const selectedPage =
+                page.getByText(
+                  selectedMenu,
+                  {
+                    exact: true
+                  }
+                );
+
+
+              // 메뉴가 나타날 때까지 대기
+              await selectedPage.waitFor({
+                state: 'visible',
+                timeout: 60000
+              });
+
+
+              console.log(
+                `${selectedMenu} menu found.`
+              );
+
+
+              // 메뉴 클릭
+              await selectedPage.click({
                 timeout: 30000
               });
+
 
               console.log(
                 `${selectedMenu} clicked successfully.`
               );
 
-              // 실제 페이지 활성화 상태 유지
-              await page.waitForTimeout(20000);
+
+              // 실제 페이지 활성화 시간
+              console.log(
+                'Waiting for page activity...'
+              );
+
+
+              await page.waitForTimeout(
+                20000
+              );
+
 
               console.log(
-                `${selectedMenu} visit completed.`
+                `${selectedMenu} visit completed successfully.`
               );
+
 
             } catch (error) {
 
+              console.log('');
+              console.log('========================================');
               console.log(
-                `WARNING: Could not click ${selectedMenu}`
+                `ERROR: Could not visit ${selectedMenu}`
               );
 
               console.log(error.message);
 
+              console.log('========================================');
+
+
+              await browser.close();
+
+              process.exit(1);
+
             }
 
-            console.log('Waiting before closing...');
 
-            await page.waitForTimeout(10000);
+            // ========================================
+            // 8. 마지막 활성 상태 유지
+            // ========================================
+
+            console.log('');
+            console.log(
+              '[6] Keeping page active for final check...'
+            );
+
+
+            await page.waitForTimeout(
+              10000
+            );
+
+
+            // ========================================
+            // 9. 브라우저 종료
+            // ========================================
+
+            console.log('');
+            console.log(
+              'Closing browser...'
+            );
+
 
             await browser.close();
 
-            console.log('================================');
-            console.log('Streamlit activity completed.');
-            console.log('================================');
+
+            console.log('');
+            console.log('========================================');
+            console.log(
+              'STREAMLIT KEEP-ALIVE COMPLETED SUCCESSFULLY'
+            );
+            console.log('========================================');
 
           })();
+
           EOF
