@@ -6,3 +6,6 @@ google-genai
 docxtpl
 requests
 selenium
+pdfplumber
+Pillow
+pytesseract

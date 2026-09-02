@@ -18,9 +18,7 @@ def main_dashboard():
         
     with col2:
         st.subheader("📜 입찰 캘린더")
-        # 방금 가져온 주소(src)를 여기에 쏙!
         calendar_url = "https://calendar.google.com/calendar/embed?src=hagrid15303%40gmail.com&ctz=Asia%2FSeoul"
-        # width(너비)와 height(높이)는 대시보드 화면에 맞게 숫자 바꿔서 조절해 줘
         components.iframe(calendar_url, width=450, height=400)
         
     with col3:
@@ -35,15 +33,16 @@ def main_dashboard():
     st.write("2. **ERP 스크래퍼:** 버튼 한 번으로 결재 대기함의 구매요청 문서를 솎아냅니다.")
     st.write("3. **재산증감 보고:** rERP 엑셀 데이터를 업로드하면 월별 증감통계가 자동 생성됩니다.")
 
-# 3. 각 페이지 정의 (경로에 pages/ 다시 추가!)
+# 3. 각 페이지 정의 
 p_main = st.Page(main_dashboard, title="홈", icon="🏠", default=True)
-p1 = st.Page("pages/1_구매추출기.py", title="구매/계약", icon="💰")
+p1 = st.Page("pages/1_구매추출기.py", title="구매/계약(기존)", icon="💰")
+p1_new = st.Page("pages/1_1_구매추출기_신규.py", title="구매/계약(단순추출)", icon="⚡") # 👈 새로 추가된 메뉴
 p2 = st.Page("pages/2_스크래퍼.py", title="스크래퍼", icon="🤖")
 p3 = st.Page("pages/3_재산증감보고.py", title="재산증감", icon="📊")
 
-# 4. ★핵심★ 리스트로 묶어서 네이버처럼 가로로 쫙 펼치기
+# 4. 리스트로 묶어서 가로로 쫙 펼치기
 pg = st.navigation(
-    [p_main, p1, p2, p3],
+    [p_main, p1, p1_new, p2, p3], # 👈 p1_new 삽입
     position="top"
 )
 pg.run()
