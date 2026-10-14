@@ -29,20 +29,17 @@ def main_dashboard():
     st.write("")
     st.write("")
     st.markdown("#### 📌 툴 사용 가이드")
-    st.write("1. **구매/계약 툴:** 상단 메뉴에서 툴 선택 후 ERP 텍스트를 복사해 넣으면 AI가 서류를 교차 검증합니다.")
-    st.write("2. **ERP 스크래퍼:** 버튼 한 번으로 결재 대기함의 구매요청 문서를 솎아냅니다.")
-    st.write("3. **재산증감 보고:** rERP 엑셀 데이터를 업로드하면 월별 증감통계가 자동 생성됩니다.")
+    st.write("1. **구매/계약:** ERP 결재 대기 텍스트와 서류 PDF를 첨부하면 Gemini AI가 품명, 금액, 견적서, 비교견적서를 교차 검증하고 결과 보고서를 생성합니다.")
+    st.write("2. **재산증감 보고:** rERP 자산내역 엑셀 파일을 업로드하면 월별 증감통계와 엑셀 서식을 자동 생성합니다.")
 
 # 3. 각 페이지 정의 
 p_main = st.Page(main_dashboard, title="홈", icon="🏠", default=True)
-p1 = st.Page("pages/1_구매추출기.py", title="구매/계약(기존)", icon="💰")
-p1_new = st.Page("pages/1_1_구매추출기_신규.py", title="구매/계약(단순추출)", icon="⚡") # 👈 새로 추가된 메뉴
-p2 = st.Page("pages/2_스크래퍼.py", title="스크래퍼", icon="🤖")
-p3 = st.Page("pages/3_재산증감보고.py", title="재산증감", icon="📊")
+p1 = st.Page("pages/1_구매추출기.py", title="구매/계약", icon="💰")
+p2 = st.Page("pages/3_재산증감보고.py", title="재산증감", icon="📊")
 
-# 4. 리스트로 묶어서 가로로 쫙 펼치기
+# 4. 상단 네비게이션
 pg = st.navigation(
-    [p_main, p1, p1_new, p2, p3], # 👈 p1_new 삽입
+    [p_main, p1, p2],
     position="top"
 )
 pg.run()
