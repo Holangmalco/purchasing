@@ -58,8 +58,19 @@ REQUIRED_FILES = ["template_under10mil.docx", "template_over10mil.docx"]
 st.set_page_config(page_title="구매추출기 V2", page_icon="💰", layout="wide")
 
 load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY")
-NTS_API_KEY = os.getenv("NTS_API_KEY")
+
+def get_secret(key):
+    val = os.getenv(key)
+    if not val:
+        try:
+            if hasattr(st, "secrets") and key in st.secrets:
+                val = st.secrets[key]
+        except Exception:
+            pass
+    return val
+
+API_KEY = get_secret("GEMINI_API_KEY")
+NTS_API_KEY = get_secret("NTS_API_KEY")
 
 missing_files = [f for f in REQUIRED_FILES if not os.path.exists(f)]
 if missing_files:
@@ -67,7 +78,7 @@ if missing_files:
     st.stop()
 
 if not API_KEY or not NTS_API_KEY:
-    st.error("🚨 환경변수(.env)에 API 키(구글 또는 국세청)가 누락되었습니다.")
+    st.error("🚨 API 키(구글 GEMINI_API_KEY 또는 국세청 NTS_API_KEY)가 누락되었습니다. (.env 또는 Streamlit Secrets 확인 필요)")
     st.stop()
 
 ai_client = genai.Client(api_key=API_KEY)

@@ -16,8 +16,7 @@ import numpy as np
 st.set_page_config(page_title="구매추출기 (단순추출)", page_icon="⚡", layout="wide")
 
 # 1. 환경변수 및 국세청 API 세팅
-load_dotenv()
-NTS_API_KEY = os.getenv("NTS_API_KEY")
+NTS_API_KEY = os.getenv("NTS_API_KEY") or (st.secrets.get("NTS_API_KEY") if hasattr(st, "secrets") else None)
 
 def check_nts_business(biz_no_str):
     clean_b = re.sub(r'[^\d]', '', str(biz_no_str))
