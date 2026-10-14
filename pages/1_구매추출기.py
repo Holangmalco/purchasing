@@ -50,7 +50,7 @@ def check_nts_business(biz_no_str):
 DEBUG = False 
 MAX_UPLOAD_FILES = 10
 MAX_FILE_SIZE_MB = 10
-AI_MODEL = "gemini-2.5-flash"
+AI_MODEL = "gemini-3.8-flash"
 SESSION_AI_KEY = "ai_res"
 SESSION_REQ_KEY = "req_analysis_done"
 REQUIRED_FILES = ["template_under10mil.docx", "template_over10mil.docx"]
@@ -522,26 +522,106 @@ def run_ai_analysis(files, req_type):
     gen_config = types.GenerateContentConfig(response_mime_type="application/json")
             
     fallback_chain = [
-        (AI_MODEL, 2),
-        ("gemini-2.5-pro", 1),
+        (AI_MODEL, 1),
+        ("gemini-3.5-flash-lite", 1),
         ("gemini-1.5-flash", 1)
     ]
     
+    failure_history = []
+    
     for model_name, max_retries in fallback_chain:
         for attempt in range(max_retries):
+            attempt_label = f"{model_name} (시도 {attempt+1}/{max_retries})"
             try:
                 response = ai_client.models.generate_content(model=model_name, contents=contents, config=gen_config)
-                if response and response.text:
-                    parsed = safe_json_load(response.text.strip())
+                
+                resp_text = ""
+                finish_reason = None
+                
+                if hasattr(response, 'candidates') and response.candidates:
+                    cand = response.candidates[0]
+                    finish_reason = getattr(cand, 'finish_reason', None)
+                    if hasattr(finish_reason, 'name'):
+                        finish_reason = finish_reason.name
+                    elif finish_reason is not None:
+                        finish_reason = str(finish_reason)
+
+                try:
+                    resp_text = response.text or ""
+                except Exception as text_e:
+                    log(f"⚠️ {attempt_label} text 추출 불가: {text_e} (finish_reason: {finish_reason})")
+                    is_safety = "SAFETY" in str(finish_reason).upper() or "SAFETY" in str(text_e).upper()
+                    failure_history.append({
+                        "model": model_name,
+                        "attempt": attempt + 1,
+                        "type": "SAFETY_BLOCKED" if is_safety else "CONTENT_BLOCKED",
+                        "summary": f"🛑 안전 정책(Safety Filter)에 의해 응답 생성이 차단되었습니다. (사유: {finish_reason})" if is_safety else f"⚠️ 응답 본문을 읽을 수 없습니다. (사유: {finish_reason or text_e})",
+                        "error": f"finish_reason: {finish_reason}, 에러: {str(text_e)}",
+                        "response_text": ""
+                    })
+                    time.sleep(1)
+                    continue
+
+                if resp_text.strip():
+                    parsed = safe_json_load(resp_text.strip())
                     if parsed: 
                         log(f"✅ AI 분석 성공: {model_name} (시도 {attempt+1})")
-                        return parsed
+                        return parsed, []
+                    else: 
+                        log(f"⚠️ {attempt_label} JSON 파싱 실패 (응답 텍스트 길이: {len(resp_text)})")
+                        failure_history.append({
+                            "model": model_name,
+                            "attempt": attempt + 1,
+                            "type": "PARSE_ERROR",
+                            "summary": "⚠️ 제미나이가 응답했으나, 시스템 규격(JSON)이 아닌 일반 텍스트/안내문으로 답변하여 자동 분석에 실패했습니다.",
+                            "error": "JSON 파싱 불가 (중괄호 { } 형태의 유효한 JSON 없음)",
+                            "response_text": resp_text.strip()
+                        })
+                else:
+                    failure_history.append({
+                        "model": model_name,
+                        "attempt": attempt + 1,
+                        "type": "EMPTY_RESPONSE",
+                        "summary": f"⚠️ 제미나이 응답 내용이 비어 있습니다. (finish_reason: {finish_reason})",
+                        "error": f"빈 텍스트 응답 (finish_reason: {finish_reason})",
+                        "response_text": ""
+                    })
             except Exception as e: 
-                log(f"⚠️ AI 호출 실패 ({model_name}, 시도 {attempt+1}): {e}")
-                time.sleep(2)
+                err_str = str(e)
+                log(f"⚠️ AI 호출 실패 ({attempt_label}): {err_str}")
+                
+                lower_err = err_str.lower()
+                if "429" in err_str or "resource_exhausted" in lower_err or "quota" in lower_err or "rate limit" in lower_err:
+                    err_type = "QUOTA_EXCEEDED"
+                    summary = "🚨 할당량/한도 초과 (429 RESOURCE_EXHAUSTED): 제미나이 API 분당 요청 수(RPM) 또는 일일 무료 한도에 도달했습니다."
+                elif "401" in err_str or "403" in err_str or "permission_denied" in lower_err or "api_key" in lower_err:
+                    err_type = "AUTH_ERROR"
+                    summary = "🔑 API 인증 실패 (401/403): GEMINI_API_KEY가 유효하지 않거나 권한이 없습니다."
+                elif "404" in err_str or "not_found" in lower_err:
+                    err_type = "MODEL_NOT_FOUND"
+                    summary = f"🔍 모델 미지원/미발견 (404 NOT_FOUND): '{model_name}' 모델을 사용할 수 없습니다."
+                elif "413" in err_str or "too large" in lower_err or "payload" in lower_err:
+                    err_type = "PAYLOAD_TOO_LARGE"
+                    summary = "📦 용량/토큰 초과: 첨부파일 용량이 너무 크거나 1회 토큰 한도를 초과했습니다."
+                elif "safety" in lower_err:
+                    err_type = "SAFETY_BLOCKED"
+                    summary = "🛑 안전 정책(Safety Filter)에 의해 요청이 차단되었습니다."
+                else:
+                    err_type = "API_ERROR"
+                    summary = f"❗ 서버/API 호출 오류 ({type(e).__name__}): {err_str[:180]}"
+
+                failure_history.append({
+                    "model": model_name,
+                    "attempt": attempt + 1,
+                    "type": err_type,
+                    "summary": summary,
+                    "error": err_str,
+                    "response_text": ""
+                })
+                time.sleep(1)
 
     log("🚨 모든 Fallback 모델 호출 실패. 수동 입력 모드로 전환합니다.")
-    return None
+    return None, failure_history
 
 def extract_contract_info(text):
     clean_text = text.replace('\n', ' ').replace('\r', '').replace('\t', ' ')
@@ -581,6 +661,7 @@ if menu == "📋 구매요청 분석":
         if SESSION_REQ_KEY in st.session_state:
             del st.session_state[SESSION_REQ_KEY]
         st.session_state['api_failed'] = False
+        st.session_state['ai_errors'] = []
         st.session_state['is_saved'] = False
     
     st.write("### 📥 [STEP 1] 정보 입력 및 서류 업로드")
@@ -641,6 +722,8 @@ if menu == "📋 구매요청 분석":
         st.session_state["p_itm"] = ""
         st.session_state["file_key"] = st.session_state.get("file_key", 0) + 1
         st.session_state["is_saved"] = False
+        st.session_state['api_failed'] = False
+        st.session_state['ai_errors'] = []
         if 'show_reset_warning' in st.session_state: del st.session_state['show_reset_warning']
         for k in [SESSION_REQ_KEY, SESSION_AI_KEY]:
             if k in st.session_state: del st.session_state[k]
@@ -678,24 +761,90 @@ if menu == "📋 구매요청 분석":
             
         if up_files:
             with st.spinner(f"🤖 AI가 '{req_type}' 기준에 맞춰 서류를 검증 중입니다..."):
-                rt = run_ai_analysis(up_files, req_type)
+                rt, ai_errors = run_ai_analysis(up_files, req_type)
                 if rt: 
                     st.session_state[SESSION_AI_KEY] = rt
                     st.session_state['api_failed'] = False
+                    st.session_state['ai_errors'] = []
                 else: 
                     handle_error("AI", "구글 AI 서버 응답 실패. 수동 입력 모드로 전환합니다.")
                     st.session_state['api_failed'] = True
+                    st.session_state['ai_errors'] = ai_errors
         else:
             st.session_state[SESSION_AI_KEY] = {}
             st.session_state['api_failed'] = False
+            st.session_state['ai_errors'] = []
 
     if st.session_state.get(SESSION_REQ_KEY):
         st.divider()
         st.write("### 📤 [STEP 2] 분석 결과")
 
         if st.session_state.get('api_failed', False):
-            st.error("🚨 **AI 자동 검증 실패 (API 서버 과부하 또는 토큰 초과)**\n\n시스템이 멈추지 않도록 우회(수동) 모드를 가동합니다. 아래 가이드에 따라 제미나이 웹에서 직접 데이터를 추출하여 붙여넣으세요.")
+            ai_errors = st.session_state.get('ai_errors', [])
             
+            has_quota = any(e.get("type") == "QUOTA_EXCEEDED" for e in ai_errors)
+            has_parse = any(e.get("type") == "PARSE_ERROR" for e in ai_errors)
+            has_safety = any(e.get("type") in ["SAFETY_BLOCKED", "CONTENT_BLOCKED"] for e in ai_errors)
+            has_auth = any(e.get("type") == "AUTH_ERROR" for e in ai_errors)
+            has_model_nf = any(e.get("type") == "MODEL_NOT_FOUND" for e in ai_errors)
+            has_payload = any(e.get("type") == "PAYLOAD_TOO_LARGE" for e in ai_errors)
+            
+            # 1. 사용자가 바로 원인을 알 수 있는 핵심 진단 배너
+            if has_quota:
+                st.error(
+                    "🚨 **AI 자동 분석 실패 원인: [API 사용량/한도 초과 (429 Quota Exceeded)]**\n\n"
+                    "Google Gemini API의 **분당 호출 수(RPM) 또는 일일 무료 토큰 한도**에 도달하여 구글 서버가 분석을 거절했습니다.\n\n"
+                    "💡 **해결/대응 방법**:\n"
+                    "1. 무료 티어의 경우 약 **1~2분 뒤**에 다시 시도하시면 정상 작동할 수 있습니다.\n"
+                    "2. 지금 즉시 처리가 필요하시다면 아래 가이드에 따라 제미나이 웹에서 직접 추출하여 붙여넣으세요."
+                )
+            elif has_safety:
+                st.error(
+                    "🛑 **AI 자동 분석 실패 원인: [구글 안전 정책(Safety Filter) 차단]**\n\n"
+                    "첨부된 서류 또는 텍스트가 Google AI의 안전 정책(개인정보, 민감정보 등) 기준에 감지되어 분석 생성이 차단되었습니다.\n\n"
+                    "💡 **해결/대응 방법**: 서류 내 민감정보(주민등록번호 등)를 가린 뒤 재시도하시거나 아래 수동 모드를 이용하세요."
+                )
+            elif has_auth:
+                st.error(
+                    "🔑 **AI 자동 분석 실패 원인: [API 키 인증 실패 (401/403)]**\n\n"
+                    ".env 파일의 GEMINI_API_KEY가 올바르지 않거나 만료되었습니다. API 키 설정을 확인해주세요."
+                )
+            elif has_parse:
+                st.warning(
+                    "⚠️ **AI 자동 분석 실패 원인: [규격 미준수 응답 / 제미나이 거부 안내문]**\n\n"
+                    "제미나이가 응답했으나, 시스템이 요구하는 정형 데이터(JSON) 형태가 아닌 **일반 텍스트나 거부 안내문**으로 답변하여 자동 분석에 실패했습니다.\n\n"
+                    "👉 **제미나이가 실제로 뭐라고 답변했는지는 바로 아래 '💬 제미나이 실제 답변 내용'에서 확인하실 수 있습니다.**"
+                )
+            elif has_model_nf:
+                st.error(
+                    "🔍 **AI 자동 분석 실패 원인: [지정 모델 미지원 (404 Not Found)]**\n\n"
+                    "호출하려는 Gemini 모델을 구글 서버에서 찾을 수 없습니다."
+                )
+            elif has_payload:
+                st.error(
+                    "📦 **AI 자동 분석 실패 원인: [파일 용량 또는 토큰 한도 초과]**\n\n"
+                    "업로드한 파일 크기나 문서 페이지 수가 너무 많아 1회 요청 제한을 초과했습니다."
+                )
+            else:
+                last_summary = ai_errors[-1].get("summary") if ai_errors else "구글 AI 서버 응답 실패"
+                st.error(f"🚨 **AI 자동 검증 실패: {last_summary}**\n\n시스템이 멈추지 않도록 우회(수동) 모드를 가동합니다. 아래 가이드에 따라 제미나이 웹에서 직접 데이터를 추출하여 붙여넣으세요.")
+
+            # 2. 제미나이 실제 답변 원문 (답변이 있는 경우 바로 확인 가능)
+            actual_replies = [e["response_text"] for e in ai_errors if e.get("response_text")]
+            if actual_replies:
+                with st.expander("💬 **제미나이가 실제로 응답한 내용 확인하기 (클릭)**", expanded=True):
+                    st.info("💡 제미나이가 서류를 검토한 후 아래와 같이 답변했습니다 (정형 JSON이 아니라 자동 반영되지 못함):")
+                    st.text_area("제미나이 답변 원문", value=actual_replies[-1], height=160, disabled=True)
+
+            # 3. 모델별 시도 내역 및 상세 에러 로그 (디버깅용)
+            if ai_errors:
+                with st.expander("🔍 **단계별 모델 호출 실패 상세 로그 (디버깅용)**", expanded=False):
+                    for idx, err in enumerate(ai_errors, 1):
+                        st.markdown(f"**[{idx}] {err.get('model')} (시도 {err.get('attempt')})**")
+                        st.write(f"- **진단**: {err.get('summary')}")
+                        if err.get('error'):
+                            st.caption(f"상세 에러 내용: `{str(err.get('error'))[:300]}`")
+
             today_str = datetime.datetime.today().strftime('%Y-%m-%d')
             extra_instruction = "🚨 이 건은 '공사' 건입니다. 첨부 서류 중 '시설공사 확인서' 또는 '장비설치 확인서'가 반드시 포함되어야 하므로 이를 꼼꼼히 확인하세요.\n" if req_type == "🏗️ 공사" else ""
             
@@ -739,6 +888,7 @@ if menu == "📋 구매요청 분석":
                         if parsed_manual:
                             st.session_state[SESSION_AI_KEY] = parsed_manual
                             st.session_state['api_failed'] = False
+                            st.session_state['ai_errors'] = []
                             st.success("✅ 수동 데이터가 완벽하게 적용되었습니다!")
                             time.sleep(1)
                             st.rerun() 
@@ -748,6 +898,7 @@ if menu == "📋 구매요청 분석":
                     if st.button("⏭️ AI 검증 포기하고 그냥 넘어가기", width="stretch"):
                         st.session_state[SESSION_AI_KEY] = {}
                         st.session_state['api_failed'] = False
+                        st.session_state['ai_errors'] = []
                         st.rerun()
 
             st.stop() 

@@ -245,7 +245,7 @@ if uploaded_files:
                         biz_results = find_with_context(extracted_text, biz_pattern)
                         
                         my_biz_no = "216-82-" # 실제 산단 번호 앞자리로 변경 필요
-                        filtered_biz = [b for b in biz_results if my_biz_no not in b]1
+                        filtered_biz = [b for b in biz_results if my_biz_no not in b]
                         
                         date_pattern = r'\d{4}[-./년]\s?\d{1,2}[-./월]\s?\d{1,2}[일]?'
                         date_results = find_with_context(extracted_text, date_pattern)
