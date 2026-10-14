@@ -59,26 +59,60 @@ st.set_page_config(page_title="구매추출기 V2", page_icon="💰", layout="wi
 
 load_dotenv()
 
-def get_secret(key):
-    val = os.getenv(key)
-    if not val:
-        try:
-            if hasattr(st, "secrets") and key in st.secrets:
-                val = st.secrets[key]
-        except Exception:
-            pass
-    return val
+def get_secret(primary_key, aliases=None):
+    if aliases is None: aliases = []
+    all_keys = [primary_key] + aliases
+    
+    # 1. os.getenv 환경변수 검색
+    for k in all_keys:
+        val = os.getenv(k) or os.getenv(k.lower()) or os.getenv(k.upper())
+        if val and str(val).strip():
+            return str(val).strip()
+            
+    # 2. st.secrets 검색
+    try:
+        if hasattr(st, "secrets"):
+            for k in all_keys:
+                if k in st.secrets and str(st.secrets[k]).strip():
+                    return str(st.secrets[k]).strip()
+                if k.lower() in st.secrets and str(st.secrets[k.lower()]).strip():
+                    return str(st.secrets[k.lower()]).strip()
+                if k.upper() in st.secrets and str(st.secrets[k.upper()]).strip():
+                    return str(st.secrets[k.upper()]).strip()
+            # secrets 딕셔너리 순회 (대소문자 무시)
+            for s_key in list(st.secrets.keys()):
+                for k in all_keys:
+                    if s_key.lower() == k.lower() and str(st.secrets[s_key]).strip():
+                        return str(st.secrets[s_key]).strip()
+    except Exception:
+        pass
+        
+    return None
 
-API_KEY = get_secret("GEMINI_API_KEY")
-NTS_API_KEY = get_secret("NTS_API_KEY")
+API_KEY = get_secret("GEMINI_API_KEY", ["GEMINI_KEY", "GOOGLE_API_KEY", "API_KEY"])
+NTS_API_KEY = get_secret("NTS_API_KEY", ["NTS_KEY", "ODCLOUD_API_KEY"])
 
 missing_files = [f for f in REQUIRED_FILES if not os.path.exists(f)]
 if missing_files:
     st.error(f"🚨 필수 파일 누락으로 실행 불가: {', '.join(missing_files)}")
     st.stop()
 
-if not API_KEY or not NTS_API_KEY:
-    st.error("🚨 API 키(구글 GEMINI_API_KEY 또는 국세청 NTS_API_KEY)가 누락되었습니다. (.env 또는 Streamlit Secrets 확인 필요)")
+missing_keys = []
+if not API_KEY: missing_keys.append("구글 제미나이 키 (GEMINI_API_KEY)")
+if not NTS_API_KEY: missing_keys.append("국세청 사업자조회 키 (NTS_API_KEY)")
+
+if missing_keys:
+    st.error(f"🚨 **API 키 누락 감지**: 다음 키를 찾을 수 없습니다 ➔ **{', '.join(missing_keys)}**")
+    st.info(
+        "💡 **해결 방법 (Streamlit Cloud)**:\n"
+        "1. Streamlit Community Cloud 관리 페이지의 앱 설정(`Settings` ➔ `Secrets`)으로 이동합니다.\n"
+        "2. 아래와 같이 **두 가지 키가 모두** 작성되어 있는지 확인하세요 (반드시 큰따옴표 포함):\n\n"
+        "```toml\n"
+        'GEMINI_API_KEY = "구글_AI_스튜디오_API_키"\n'
+        'NTS_API_KEY = "국세청_공공데이터_API_키"\n'
+        "```\n"
+        "*(국세청 키가 누락되어도 이 경고가 뜰 수 있습니다)*"
+    )
     st.stop()
 
 ai_client = genai.Client(api_key=API_KEY)
