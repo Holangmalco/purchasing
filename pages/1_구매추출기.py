@@ -216,8 +216,10 @@ def handle_error(err_type, msg, e=None):
 
 USER_DB = load_user_db()
 CACHE_FILE = "local_cache.json"
+GSHEETS_URL = get_secret("GSHEETS_URL") or "https://script.google.com/macros/s/AKfycbx3qKiOuC7t0J5g7ZJWWccXzQTld728WRPqbcyf7jBD9VHFZNYv0XhqqGug--imgH6U/exec"
 
 def save_to_cache(req_no, meta_data, raw_data):
+    # 1. 로컬 캐시 파일 저장 (오프라인 / 빠른 로드용)
     cache = {}
     if os.path.exists(CACHE_FILE):
         try:
@@ -229,33 +231,136 @@ def save_to_cache(req_no, meta_data, raw_data):
     existing_record["raw"].update(raw_data)
     cache[req_no] = existing_record
     
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"로컬 캐시 저장 오류: {e}")
+
+    # 2. 구글 시트 영구 저장소 (Google Apps Script API) 연동
+    if GSHEETS_URL:
+        try:
+            gsheet_payload = dict(meta_data)
+            # Raw_data를 직렬화하여 구글 시트의 Raw_data 열에도 영구 저장
+            gsheet_payload["Raw_data"] = json.dumps(raw_data, ensure_ascii=False)
+            res = requests.post(GSHEETS_URL, json={"data": gsheet_payload}, timeout=10)
+            if res.status_code == 200:
+                log(f"구글 시트 저장 성공 ({req_no})")
+            else:
+                log(f"구글 시트 저장 실패 ({res.status_code}): {res.text}")
+        except Exception as e:
+            log(f"구글 시트 API 연동 실패: {e}")
 
 def get_cache_list():
-    if not os.path.exists(CACHE_FILE): return []
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f: cache = json.load(f)
-        result = []
-        for idx, (k, v) in enumerate(cache.items(), 1):
-            meta = v.get("meta", {})
-            result.append({
-                "구매요구번호": meta.get("구매요구번호", k),
-                "과제번호": meta.get("과제번호", ""),
-                "구매요청액": meta.get("구매요청액", ""),
-                "연구책임자정보": meta.get("연구책임자정보", ""),
-                "물품담당자": meta.get("물품담당자", ""),
-                "업체명": meta.get("업체명", ""),
-                "업체담당자정보": meta.get("업체담당자정보", "")
-            })
-        return result[::-1]
-    except: return []
+    result_map = {}
+    
+    # 1. 구글 시트 영구 저장소에서 먼저 최신 목록 조회
+    if GSHEETS_URL:
+        try:
+            res = requests.get(GSHEETS_URL, timeout=8)
+            if res.status_code == 200:
+                rows = res.json()
+                if isinstance(rows, list):
+                    for row in rows:
+                        req_no = str(row.get("구매요구번호", "")).strip()
+                        if not req_no or req_no.startswith("TEST"): 
+                            continue
+                        
+                        raw_str = row.get("Raw_data", "")
+                        raw_obj = {}
+                        if raw_str:
+                            try: raw_obj = json.loads(raw_str)
+                            except: pass
+                            
+                        vendor_mgr = row.get("업체담당자정보") or row.get("업체담당자 정보") or ""
+                        remarks_val = row.get("비고사항") or row.get("물품비고") or ""
+                        if not remarks_val and raw_obj:
+                            remarks_val = raw_obj.get("remarks", "")
+                            
+                        item_record = {
+                            "구매요구번호": req_no,
+                            "과제번호": row.get("과제번호", ""),
+                            "구매요청액": row.get("구매요청액", ""),
+                            "연구책임자정보": row.get("연구책임자정보", ""),
+                            "물품담당자": row.get("물품담당자", ""),
+                            "업체명": row.get("업체명", ""),
+                            "업체담당자정보": vendor_mgr,
+                            "비고사항": remarks_val
+                        }
+                        result_map[req_no] = (item_record, raw_obj, row)
+        except Exception as e:
+            log(f"구글 시트 목록 조회 실패 (로컬 캐시 사용): {e}")
+
+    # 2. 로컬 캐시 병합 (오프라인 상태이거나 미동기화 건 보완)
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                local_db = json.load(f)
+            for req_no, v in local_db.items():
+                if str(req_no).startswith("TEST"): continue
+                meta = v.get("meta", {})
+                raw = v.get("raw", {})
+                if req_no not in result_map:
+                    result_map[req_no] = ({
+                        "구매요구번호": meta.get("구매요구번호", req_no),
+                        "과제번호": meta.get("과제번호", ""),
+                        "구매요청액": meta.get("구매요청액", ""),
+                        "연구책임자정보": meta.get("연구책임자정보", ""),
+                        "물품담당자": meta.get("물품담당자", ""),
+                        "업체명": meta.get("업체명", ""),
+                        "업체담당자정보": meta.get("업체담당자정보") or meta.get("업체담당자 정보", ""),
+                        "비고사항": meta.get("비고사항") or meta.get("물품비고", "")
+                    }, raw, meta)
+                else:
+                    existing_item, existing_raw, existing_row = result_map[req_no]
+                    if not existing_raw and raw:
+                        result_map[req_no] = (existing_item, raw, existing_row)
+        except Exception as e:
+            log(f"로컬 캐시 읽기 실패: {e}")
+
+    # 3. 로컬 파일에 동기화 상태 캐싱
+    if result_map:
+        try:
+            sync_db = {}
+            if os.path.exists(CACHE_FILE):
+                try:
+                    with open(CACHE_FILE, "r", encoding="utf-8") as f: sync_db = json.load(f)
+                except: pass
+            for req_no, (m, r, raw_meta) in result_map.items():
+                if req_no not in sync_db: sync_db[req_no] = {"meta": {}, "raw": {}}
+                sync_db[req_no]["meta"].update(raw_meta)
+                if r: sync_db[req_no]["raw"].update(r)
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(sync_db, f, ensure_ascii=False, indent=2)
+        except: pass
+
+    res_list = [item[0] for item in result_map.values()]
+    return res_list[::-1]
 
 def load_from_cache(req_no):
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f: 
-            return json.load(f).get(req_no, {}).get("raw", None)
-    except: return None
+    req_no_str = str(req_no).strip()
+    # 1. 로컬 캐시 조회
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f: 
+                data = json.load(f).get(req_no_str, {}).get("raw", None)
+                if data: return data
+        except: pass
+
+    # 2. 로컬에 없으면 구글 시트에서 직접 조회
+    if GSHEETS_URL:
+        try:
+            res = requests.get(GSHEETS_URL, timeout=8)
+            if res.status_code == 200:
+                for row in res.json():
+                    if str(row.get("구매요구번호", "")).strip() == req_no_str:
+                        raw_str = row.get("Raw_data", "")
+                        if raw_str:
+                            return json.loads(raw_str)
+        except Exception as e:
+            log(f"구글 시트 로드 실패: {e}")
+
+    return None
 
 # ==========================================
 # 3. 데이터 파싱 엔진
@@ -409,6 +514,19 @@ def parse_goods_erp(text):
     items = []
     valid_format = False
     if not text.strip(): return items, valid_format
+
+    # 표 헤더에 '비고' 열이 명시되어 있는지 검색
+    remark_col_idx = -1
+    for line in text.strip().split('\n'):
+        if not line.strip(): continue
+        tokens = [t.strip() for t in line.split('\t')]
+        for i, t in enumerate(tokens):
+            if '비고' in t:
+                remark_col_idx = i
+                break
+        if remark_col_idx != -1:
+            break
+
     for line in text.strip().split('\n'):
         if not line.strip(): continue
         tokens = line.split('\t')
@@ -432,10 +550,21 @@ def parse_goods_erp(text):
                 name_str = tokens[1].strip() if len(tokens) > 1 else "무명"
                 if len(tokens) > 2 and tokens[2].strip(): name_str = f"{name_str} ({tokens[2].strip()})"
                 
+                # 비고(참고사항) 추출 로직
+                remark = ""
+                if remark_col_idx != -1 and len(tokens) > remark_col_idx:
+                    remark = tokens[remark_col_idx].strip()
+                elif con_idx + 1 < len(tokens):
+                    # 물품담당자(con_idx) 뒤에 위치하는 토큰들을 비고 데이터로 수집
+                    trailing = [t.strip() for t in tokens[con_idx + 1:] if t.strip()]
+                    if trailing:
+                        remark = " / ".join(trailing)
+
                 items.append({
                     'name': name_str, 'category': raw_cat if raw_cat else "공란", 
                     'reg_status': reg_status, 'contact': parse_contact(contact_raw), 
-                    'qty': qty, 'unit': unit, 'price': price, 'unit_price': unit_price
+                    'qty': qty, 'unit': unit, 'price': price, 'unit_price': unit_price,
+                    'remark': remark
                 })
         except Exception as e: 
             log(f"물품 파싱 에러: {e}")
@@ -446,6 +575,18 @@ def parse_service_erp(text, force_category):
     items = []
     valid_format = False
     if not text.strip(): return items, valid_format
+
+    remark_col_idx = -1
+    for line in text.strip().split('\n'):
+        if not line.strip(): continue
+        tokens = [t.strip() for t in line.split('\t')]
+        for i, t in enumerate(tokens):
+            if '비고' in t:
+                remark_col_idx = i
+                break
+        if remark_col_idx != -1:
+            break
+
     for line in text.strip().split('\n'):
         if not line.strip(): continue
         tokens = line.split('\t')
@@ -455,13 +596,22 @@ def parse_service_erp(text, force_category):
                 name_str = tokens[1].strip() if len(tokens) > 1 else "무명"
                 if len(tokens) > 2 and tokens[2].strip(): name_str = f"{name_str} ({tokens[2].strip()})"
                 
+                remark = ""
+                if remark_col_idx != -1 and len(tokens) > remark_col_idx:
+                    remark = tokens[remark_col_idx].strip()
+                elif len(tokens) > 15:
+                    trailing = [t.strip() for t in tokens[15:] if t.strip()]
+                    if trailing:
+                        remark = " / ".join(trailing)
+
                 items.append({
                     'name': name_str, 
                     'category': tokens[9].strip() if tokens[9].strip() else force_category, 
                     'reg_status': "N/A(용역)", 
                     'contact': parse_contact(tokens[14].strip()), 
                     'qty': safe_int(tokens[3]), 'unit': tokens[4].strip(), 
-                    'price': safe_int(tokens[8]), 'unit_price': safe_int(tokens[5])
+                    'price': safe_int(tokens[8]), 'unit_price': safe_int(tokens[5]),
+                    'remark': remark
                 })
         except Exception as e:
             log(f"용역/공사 파싱 에러: {e}")
@@ -1241,9 +1391,25 @@ if menu == "📋 구매요청 분석":
             for i, itm in enumerate(item_list):
                 stt = itm['reg_status']
                 s_disp = f"🚨 {stt}" if "확인필요" in stt else (f"✅ 예" if stt=="예" else ("➖ 해당없음" if "N/A" in stt else f"⚠️ 아니오"))
-
-                t_data.append({"No.": i+1, "품명": itm['name'], "단위": itm['unit'], "등록여부": s_disp, "물품담당자": itm['contact']})
+                rem_val = itm.get('remark', '')
+                t_data.append({
+                    "No.": i+1, 
+                    "품명": itm['name'], 
+                    "단위": itm['unit'], 
+                    "등록여부": s_disp, 
+                    "물품담당자": itm['contact'],
+                    "비고": rem_val if rem_val else "➖"
+                })
             st.dataframe(pd.DataFrame(t_data), width="stretch", hide_index=True)
+
+            # 💡 [신규] 비고사항 감지 시 별도 참고용 카드 렌더링
+            items_with_remarks = [itm for itm in item_list if itm.get('remark') and itm['remark'].strip() and itm['remark'].strip() not in ['-', '없음', '해당없음']]
+            if items_with_remarks:
+                with st.container(border=True):
+                    st.markdown("##### 📌 [참고용] 물품/용역 비고사항 감지")
+                    st.info("💡 ERP 품목 내역의 '비고'란에 기재된 내용입니다. 구매 심사 및 처리 시 참고하세요:")
+                    for itm in items_with_remarks:
+                        st.markdown(f"- 🔹 **{itm['name']}**: `{itm['remark']}`")
         else:
             st.warning("품목 내역이 없습니다.")
         
@@ -1298,10 +1464,6 @@ if menu == "📋 구매요청 분석":
 
         st.divider()
         if st.button("💾 현재 분석 내역을 시스템(DB)에 저장하기", type="primary", width="stretch"):
-            raw_to_save = {
-                "req_input": raw_req, "fin_input": raw_fin, "itm_input": raw_itm, "ai_res": ai, "req_type": req_type, "con_type": con_type
-            }
-            
             item_mgrs = []
             for itm in item_list:
                 if itm.get('contact') and "없음" not in itm['contact']:
@@ -1310,6 +1472,19 @@ if menu == "📋 구매요청 분석":
             final_item_mgr = " / ".join(unique_item_mgrs) if unique_item_mgrs else "⚠️ 미기재"
 
             vendor_mgr_info = f"{t_rep} / {t_phn} / {t_eml}"
+
+            # 비고사항 수집 및 통합 정리
+            item_remarks = []
+            for itm in item_list:
+                rem = itm.get('remark', '').strip()
+                if rem and rem not in ['-', '없음', '해당없음']:
+                    item_remarks.append(f"{itm['name']}: {rem}" if len(item_list) > 1 else rem)
+            final_remarks = " / ".join(item_remarks) if item_remarks else ""
+            
+            raw_to_save = {
+                "req_input": raw_req, "fin_input": raw_fin, "itm_input": raw_itm, "ai_res": ai, "req_type": req_type, "con_type": con_type,
+                "item_list": item_list, "remarks": final_remarks
+            }
             
             meta_to_save = {
                 "요청분석일자": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1319,10 +1494,13 @@ if menu == "📋 구매요청 분석":
                 "연구책임자정보": base_data['pi_formatted'], 
                 "물품담당자": final_item_mgr,               
                 "업체명": t_ven,
-                "업체담당자정보": vendor_mgr_info,          
+                "업체담당자정보": vendor_mgr_info,
+                "업체담당자 정보": vendor_mgr_info,
                 "사업자번호": t_biz,
                 "계좌번호": t_acc_num,
                 "예금주": t_acc_holder,
+                "비고사항": final_remarks,
+                "물품비고": final_remarks,
                 "연구책임자_성명": base_data['pi_name'],
                 "연구책임자_학과": base_data['pi_dept'],
                 "연구책임자_이메일": base_data['pi_email']
@@ -1330,7 +1508,7 @@ if menu == "📋 구매요청 분석":
             
             save_to_cache(base_data['req_no'], meta_to_save, raw_to_save)
             st.session_state['is_saved'] = True
-            st.success(f"✅ 구매요구번호 [{base_data['req_no']}] 건의 핵심 데이터가 완벽하게 저장되었습니다! '분석내용 불러오기' 메뉴에서 확인 가능합니다.")
+            st.success(f"✅ 구매요구번호 [{base_data['req_no']}] 건의 핵심 데이터가 로컬 및 구글 시트에 안전하게 저장되었습니다! '분석내용 불러오기' 메뉴에서 확인 가능합니다.")
 
 # ----------------- [2. 구매계약 분석 및 발주서 자동 생성] -----------------
 elif menu == "🤝 구매계약 분석":
@@ -1468,8 +1646,12 @@ elif menu == "🕒 분석내용 불러오기":
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     cache_db = json.load(f)
                 
+                cache_map = {item["구매요구번호"]: item for item in cache_list}
                 for _, row in edited_df.iterrows():
                     req_no = str(row["구매요구번호"]) 
+                    orig = cache_map.get(req_no, {})
+                    changed = any(str(row.get(col, "")) != str(orig.get(col, "")) for col in row.index if col != "구매요구번호")
+
                     if req_no in cache_db:
                         cache_db[req_no]["meta"]["과제번호"] = row["과제번호"]
                         cache_db[req_no]["meta"]["구매요청액"] = row["구매요청액"]
@@ -1477,11 +1659,24 @@ elif menu == "🕒 분석내용 불러오기":
                         cache_db[req_no]["meta"]["물품담당자"] = row["물품담당자"]
                         cache_db[req_no]["meta"]["업체명"] = row["업체명"]
                         cache_db[req_no]["meta"]["업체담당자정보"] = row["업체담당자정보"]
+                        cache_db[req_no]["meta"]["업체담당자 정보"] = row["업체담당자정보"]
+                        if "비고사항" in row:
+                            cache_db[req_no]["meta"]["비고사항"] = row["비고사항"]
+                            cache_db[req_no]["meta"]["물품비고"] = row["비고사항"]
+
+                        # 수정한 행만 구글 시트에 즉시 반영
+                        if changed and GSHEETS_URL:
+                            try:
+                                gsheet_data = dict(cache_db[req_no]["meta"])
+                                gsheet_data["Raw_data"] = json.dumps(cache_db[req_no].get("raw", {}), ensure_ascii=False)
+                                requests.post(GSHEETS_URL, json={"data": gsheet_data}, timeout=6)
+                            except Exception as ge:
+                                log(f"구글 시트 수정 반영 에러 ({req_no}): {ge}")
                 
                 with open(CACHE_FILE, "w", encoding="utf-8") as f:
                     json.dump(cache_db, f, ensure_ascii=False, indent=2)
                     
-                st.success("✅ 대시보드 수정사항이 DB에 완벽하게 덮어쓰기 되었습니다!")
+                st.success("✅ 대시보드 수정사항이 로컬 및 구글 시트에 완벽하게 반영되었습니다!")
                 time.sleep(1)
                 st.rerun()
             except Exception as e:
