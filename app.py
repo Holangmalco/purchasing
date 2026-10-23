@@ -26,11 +26,6 @@ def main_dashboard():
         st.warning("💡 담당자와 협의 후 추가 예정")
         st.metric(label="필요한 내용", value="N 건", delta="특이사항")
 
-    st.write("")
-    st.write("")
-    st.markdown("#### 📌 툴 사용 가이드")
-    st.write("1. **구매/계약:** ERP 결재 대기 텍스트와 서류 PDF를 첨부하면 Gemini AI가 품명, 금액, 견적서, 비교견적서를 교차 검증하고 결과 보고서를 생성합니다.")
-    st.write("2. **재산증감 보고:** rERP 자산내역 엑셀 파일을 업로드하면 월별 증감통계와 엑셀 서식을 자동 생성합니다.")
 
 # 3. 각 페이지 정의 
 p_main = st.Page(main_dashboard, title="홈", icon="🏠", default=True)
