@@ -47,10 +47,12 @@ jobs:
             });
 
             const page = await context.newPage();
-
             const APP_URL = 'https://iacf-purchasing.streamlit.app/';
 
             try {
+              // ----------------------------------------
+              // 1. 앱 페이지 접속
+              // ----------------------------------------
               console.log(`[1] Navigating to ${APP_URL}...`);
               await page.goto(APP_URL, {
                 waitUntil: 'domcontentloaded',
@@ -59,90 +61,88 @@ jobs:
 
               // 초기 로딩 대기
               await page.waitForTimeout(5000);
-              console.log('Page DOM content loaded.');
+              console.log(`Page loaded. Current URL: ${page.url()}`);
 
-              // ========================================
+              // ----------------------------------------
               // 2. Sleep 상태 감지 및 Wake-up 버튼 클릭
-              // ========================================
+              // ----------------------------------------
               console.log('[2] Checking if app is in sleep mode...');
+              const wakeButton = page.locator('button:has-text("get this app back up"), button:has-text("Yes, get this app back up!"), button:has-text("Wake up")');
 
-              // Streamlit Cloud의 "Yes, get this app back up!" 버튼 찾기 (대소문자 무시)
-              const wakeButton = page.locator('button:has-text("get this app back up"), button:has-text("Yes, get this app back up!")');
-              const wakeCount = await wakeButton.count();
-
-              if (wakeCount > 0 && await wakeButton.first().isVisible()) {
+              if (await wakeButton.count() > 0 && await wakeButton.first().isVisible()) {
                 console.log('⚠️ [SLEEP DETECTED] Wake-up button found. Clicking to wake app...');
                 await wakeButton.first().click({ timeout: 15000 });
-                console.log('Wake-up button clicked. Waiting for app to boot (up to 90s)...');
-                await page.waitForTimeout(15000);
+                console.log('Wake-up button clicked. Waiting for container to boot (30s)...');
+                await page.waitForTimeout(30000);
               } else {
-                console.log('✅ App does not appear to be sleeping (or already awake).');
+                console.log('✅ App does not appear to be sleeping (already awake).');
               }
 
-              // ========================================
-              // 3. 메인 콘텐츠 및 Streamlit 앱 준비 대기
-              // ========================================
-              console.log('[3] Waiting for Streamlit main frame/elements...');
+              // ----------------------------------------
+              // 3. Streamlit 앱 iframe 및 메인 콘텐츠 감지
+              // ----------------------------------------
+              console.log('[3] Detecting Streamlit app frame...');
+              
+              // Streamlit Cloud는 실제 앱을 iframe 안에 로드합니다.
+              const iframeLocator = page.frameLocator('iframe[title="streamlitApp"], iframe').first();
+              let targetContext = page; // iframe이 없거나 직접 로드된 경우 대비 fallback
+
               try {
-                // Streamlit 메인 앱 컨테이너 또는 네비게이션이 뜰 때까지 대기
-                await page.waitForSelector('[data-testid="stAppViewContainer"], header, .stApp', {
+                // iframe 내부의 메인 컨테이너 대기 (최대 15초)
+                await iframeLocator.locator('[data-testid="stAppViewContainer"], .stApp, header').first().waitFor({
                   state: 'attached',
-                  timeout: 60000
+                  timeout: 15000
                 });
-                console.log('Streamlit core container detected.');
+                console.log('✅ Streamlit app detected inside iframe.');
+                targetContext = iframeLocator;
               } catch (e) {
-                console.log('Note: Core container selector timeout, proceeding with interaction...');
-              }
-
-              await page.waitForTimeout(5000);
-
-              // ========================================
-              // 4. 네비게이션 및 메뉴 상호작용 (세션 유지)
-              // ========================================
-              console.log('[4] Interacting with page to keep session active...');
-
-              // 상단 메뉴 "구매/계약" 탭 클릭 시도
-              try {
-                const purchaseTab = page.locator('text=/구매\\/계약/').first();
-                if (await purchaseTab.isVisible({ timeout: 10000 })) {
-                  await purchaseTab.click({ timeout: 10000 });
-                  console.log('Successfully navigated to [구매/계약] page.');
-                  await page.waitForTimeout(4000);
+                // iframe이 없거나 직접 렌더링된 경우 최상위 페이지에서 대기 시도
+                try {
+                  await page.locator('[data-testid="stAppViewContainer"], .stApp, header').first().waitFor({
+                    state: 'attached',
+                    timeout: 5000
+                  });
+                  console.log('✅ Streamlit app detected in top page.');
+                } catch (err) {
+                  console.log('ℹ️ Core container not immediately detected (proceeding anyway, visit ping registered).');
                 }
-              } catch (err) {
-                console.log('Navigation to [구매/계약] skipped or already active:', err.message);
               }
 
-              // 사이드바 내부 라디오 메뉴 항목 클릭 시도 (이모지 유무 무관하게 유연한 정규식 매칭)
-              const targetMenus = [/구매요청/, /구매계약/, /불러오기/, /재산증감/];
-              const randomTarget = targetMenus[Math.floor(Math.random() * targetMenus.length)];
-
+              // ----------------------------------------
+              // 4. 가벼운 메뉴 인터랙션 (활성 세션 핑)
+              // ----------------------------------------
+              console.log('[4] Performing keep-alive interactions...');
               try {
-                const menuItem = page.locator(`text=${randomTarget}`).first();
-                if (await menuItem.isVisible({ timeout: 5000 })) {
-                  await menuItem.click({ timeout: 5000 });
-                  console.log(`Clicked menu matching ${randomTarget}`);
+                // 상단 네비게이션 또는 탭 메뉴 클릭 시도
+                const navItem = targetContext.locator('text=/구매\\/계약|재산증감|홈/').first();
+                if (await navItem.isVisible({ timeout: 5000 })) {
+                  await navItem.click({ timeout: 5000 });
+                  console.log('Navigated menu item successfully.');
+                  await page.waitForTimeout(3000);
                 }
               } catch (e) {
-                console.log('Submenu click skipped:', e.message);
+                console.log('Menu interaction skipped:', e.message);
               }
 
-              // 세션 유지를 위해 가벼운 스크롤 동작
-              await page.mouse.wheel(0, 300);
-              await page.waitForTimeout(3000);
-              await page.mouse.wheel(0, -300);
-              await page.waitForTimeout(5000);
+              // 스크롤 동작으로 브라우저 활성 상태 전달
+              await page.mouse.wheel(0, 200);
+              await page.waitForTimeout(2000);
+              await page.mouse.wheel(0, -200);
+
+              // 세션 유지 대기
+              console.log('Maintaining active session for 10 seconds...');
+              await page.waitForTimeout(10000);
 
               console.log('========================================');
-              console.log('🎉 KEEP-ALIVE SESSION REFRESHED SUCCESSFULLY!');
+              console.log('🎉 KEEP-ALIVE COMPLETED SUCCESSFULLY!');
               console.log('========================================');
 
             } catch (error) {
-              console.error('⚠️ Warning during keep-alive execution:', error.message);
-              // 앱 페이지 접속 시도가 이루어졌다면 스케줄 비활성화를 방지하기 위해 정상 종료
+              // 방문 시도 자체가 이루어졌다면 워크플로우를 실패시키지 않고 경고만 출력
+              console.warn('⚠️ Non-fatal notice during keep-alive run:', error.message);
             } finally {
               await browser.close();
-              console.log('Browser closed.');
+              console.log('Browser closed cleanly.');
             }
           })();
           EOF
