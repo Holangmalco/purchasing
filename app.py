@@ -1,40 +1,21 @@
 import streamlit as st
-import streamlit.components.v1 as components
 
 # 1. 전체 페이지 기본 설정
-st.set_page_config(page_title="구매부서 통합 대시보드", page_icon="🏫", layout="wide")
+st.set_page_config(page_title="구매부서 통합시스템", page_icon="🏫", layout="wide")
 
-# 2. 메인 대시보드 화면 만들기
-def main_dashboard():
-    st.markdown("<h2 style='text-align: center; color: #004797;'>🏫 구매부서 통합 업무 대시보드</h2>", unsafe_allow_html=True)
-    st.markdown("---")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.subheader("🛒 일반구매 현황 (예시)")
-        st.info("💡 향후 노션 DB API 및 스크래퍼 연동 예정")
-        st.metric(label="이번 주 신규 구매요청", value="N 건", delta="계약 중 N'건")
-        
-    with col2:
-        st.subheader("📜 입찰 캘린더")
-        calendar_url = "https://calendar.google.com/calendar/embed?src=hagrid15303%40gmail.com&ctz=Asia%2FSeoul"
-        components.iframe(calendar_url, width=450, height=400)
-        
-    with col3:
-        st.subheader("🏢 자산관리 현황 (예시)")
-        st.warning("💡 담당자와 협의 후 추가 예정")
-        st.metric(label="필요한 내용", value="N 건", delta="특이사항")
+# 2. 현재 활발히 사용 중인 핵심 페이지만 연결 (홈 예시 화면 및 재산증감은 숨김 처리)
+p_main = st.Page("pages/1_구매추출기.py", title="구매부서 통합시스템", icon="🏫", default=True)
 
+# -------------------------------------------------------------------
+# [보관] 향후 추가 예정 화면 (추후 기능 완성 시 다시 활성화 가능)
+# -------------------------------------------------------------------
+# def main_dashboard(): ...
+# p_home = st.Page(main_dashboard, title="홈", icon="🏠")
+# p_asset = st.Page("pages/3_재산증감보고.py", title="재산증감", icon="📊")
 
-# 3. 각 페이지 정의 
-p_main = st.Page(main_dashboard, title="홈", icon="🏠", default=True)
-p1 = st.Page("pages/1_구매추출기.py", title="구매/계약", icon="💰")
-p2 = st.Page("pages/3_재산증감보고.py", title="재산증감", icon="📊")
-
-# 4. 상단 네비게이션
+# 3. 상단 불필요한 네비게이션 숨김 (내부 메뉴로 직관적 전환)
 pg = st.navigation(
-    [p_main, p1, p2],
-    position="top"
+    [p_main],
+    position="hidden"
 )
-pg.run()
+pg.run()

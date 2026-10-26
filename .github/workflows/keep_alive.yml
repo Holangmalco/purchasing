@@ -19,7 +19,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install Playwright
         run: |
@@ -113,8 +113,8 @@ jobs:
               // ----------------------------------------
               console.log('[4] Performing keep-alive interactions...');
               try {
-                // 상단 네비게이션 또는 탭 메뉴 클릭 시도
-                const navItem = targetContext.locator('text=/구매\\/계약|재산증감|홈/').first();
+                // 메뉴 클릭 시도 (구매추출기, 구매계약관리 등)
+                const navItem = targetContext.locator('text=/구매추출기|구매계약관리|구매\\/계약|재산증감|홈/').first();
                 if (await navItem.isVisible({ timeout: 5000 })) {
                   await navItem.click({ timeout: 5000 });
                   console.log('Navigated menu item successfully.');

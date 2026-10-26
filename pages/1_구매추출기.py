@@ -55,7 +55,10 @@ SESSION_AI_KEY = "ai_res"
 SESSION_REQ_KEY = "req_analysis_done"
 REQUIRED_FILES = ["template_under10mil.docx", "template_over10mil.docx"]
 
-st.set_page_config(page_title="구매추출기 V2", page_icon="💰", layout="wide")
+try:
+    st.set_page_config(page_title="구매부서 통합시스템", page_icon="🏫", layout="wide")
+except Exception:
+    pass
 
 load_dotenv()
 
@@ -927,14 +930,24 @@ def parse_smart_contact_memo(text):
 # 5. 화면 UI 구성
 # ==========================================
 with st.sidebar:
-    st.title("💰 구매추출기")
-    menu = st.radio("메뉴", ["📋 구매요청 분석", "🤝 구매계약 분석", "🕒 분석내용 불러오기", "🗂️ 유틸리티"], label_visibility="collapsed", key="main_menu")
+    st.markdown("## 🏫 구매부서 통합시스템")
+    menu = st.radio(
+        "메뉴 선택", 
+        ["💰 구매추출기", "🤝 구매계약관리"], 
+        key="main_menu"
+    )
     st.divider()
-    st.success("✅ 시스템 정상 가동 중")
+    
+    # 💡 과거 작업내역 불러오기는 평소엔 닫혀있는 아코디언으로 보관 (화면 복잡도 최소화)
+    with st.expander("🕒 과거 분석내역 불러오기 (보관함)", expanded=False):
+        if st.checkbox("보관함 대시보드 열기", key="open_history_db"):
+            menu = "🕒 분석내용 불러오기"
+            
+    st.caption("✅ 시스템 정상 가동 중")
 
 # ----------------- [1. 구매요청 분석] -----------------
-if menu == "📋 구매요청 분석":
-    st.title("📋 구매요청 분석")
+if menu in ["💰 구매추출기", "📋 구매요청 분석"]:
+    st.title("💰 구매추출기 (구매요청서 분석)")
     
     def on_critical_condition_change():
         if SESSION_REQ_KEY in st.session_state:
@@ -1595,8 +1608,8 @@ if menu == "📋 구매요청 분석":
             st.success(f"✅ 구매요구번호 [{base_data['req_no']}] 건의 핵심 데이터가 로컬 및 구글 시트에 안전하게 저장되었습니다! '분석내용 불러오기' 메뉴에서 확인 가능합니다.")
 
 # ----------------- [2. 구매계약 분석 및 발주서 자동 생성] -----------------
-elif menu == "🤝 구매계약 분석":
-    st.title("🤝 구매계약 다중 분석 및 발주서 자동 생성")
+elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
+    st.title("🤝 구매계약관리 (발주서 자동 생성)")
     st.info("여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.")
     
     if 'con_input_count' not in st.session_state:
@@ -1864,7 +1877,9 @@ elif menu == "🕒 분석내용 불러오기":
                 
                 st.session_state[SESSION_REQ_KEY] = True
                 st.session_state['is_saved'] = True  
-                st.session_state["main_menu"] = "📋 구매요청 분석"
+                st.session_state["main_menu"] = "💰 구매추출기"
+                if "open_history_db" in st.session_state:
+                    st.session_state["open_history_db"] = False
             else:
                 st.session_state["load_msg"] = f"🚨 입력하신 번호 [{req_val}]에 해당하는 저장 데이터가 없습니다."
 
