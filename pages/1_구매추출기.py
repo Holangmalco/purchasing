@@ -218,6 +218,13 @@ def handle_error(err_type, msg, e=None):
         st.error(f"❗ **[시스템 오류]** {msg}")
 
 USER_DB = load_user_db()
+BUYER_STAFF = {
+    "권순철 사원": {"name": "권순철 사원", "phone": "02-6935-2624", "email": "hagrid0924@sejong.ac.kr"},
+    "김민석 사원": {"name": "김민석 사원", "phone": "02-3408-3032", "email": "sejongtwice@sejong.ac.kr"}
+}
+for _bk, _bv in BUYER_STAFF.items():
+    USER_DB[_bk] = {"phone": _bv["phone"], "email": _bv["email"]}
+    USER_DB[_bk.split()[0]] = {"phone": _bv["phone"], "email": _bv["email"]}
 CACHE_FILE = "local_cache.json"
 GSHEETS_URL = get_secret("GSHEETS_URL") or "https://script.google.com/macros/s/AKfycbx3qKiOuC7t0J5g7ZJWWccXzQTld728WRPqbcyf7jBD9VHFZNYv0XhqqGug--imgH6U/exec"
 
@@ -833,6 +840,7 @@ def extract_contract_info(text):
         'con_name': re.search(r'계약건명\s*(.*?)\s*납품기간', clean_text),
         'con_amount': re.search(r'계약금액\s*([\d,]+)', clean_text),
         'vendor_name': re.search(r'계약업체명\s*(.*?)\s*사업자번호', clean_text),
+        'buyer_name': re.search(r'계약담당자\s*(.*?)\s*접수일자', clean_text) or re.search(r'계약담당자\s*([^\s]+)', clean_text),
         'email': re.search(r'e-mail주소\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', clean_text)
     }
     result = {k: v.group(1).strip() if v else "" for k, v in info.items()}
@@ -853,7 +861,8 @@ def extract_contract_info(text):
 def parse_smart_contact_memo(text):
     """
     노션 비고란 등에서 복사한 실사용자/업체담당자 비정형 텍스트를 정밀 분리합니다.
-    (예: 실사용자: 정영권 교수 01033246327 ykjung@sejong.ac.kr)
+    (예: 실사용자: 정영권 교수 01033246327 ykjung@sejong.ac.kr
+         업체담당자 / 김철수 / 010-9999-8888)
     """
     result = {
         'user_name': '', 'user_phone': '', 'user_email': '',
@@ -865,15 +874,58 @@ def parse_smart_contact_memo(text):
     phone_pattern = r'(01[016789]-?\d{3,4}-?\d{4}|02-?\d{3,4}-?\d{4}|\b\d{4}\b)'
     email_pattern = r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
 
-    lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
-    
-    for idx, raw_line in enumerate(lines):
-        line = raw_line
+    normalized_text = text
+    # 만약 엔터 없이 한 줄에 실사용자와 업체담당자가 함께 입력된 경우 분리
+    vendor_split_match = re.search(r'[\r\n\s/]+(?=(?:업체담당자|업체|협력사|거래처|vendor|공급사)[\s:：/\-])', normalized_text, flags=re.IGNORECASE)
+    if vendor_split_match and ('실사용자' in normalized_text or '사용자' in normalized_text):
+        split_pos = vendor_split_match.start()
+        user_part = normalized_text[:split_pos]
+        vendor_part = normalized_text[split_pos:]
+        lines = [user_part.strip(), vendor_part.strip()]
+    else:
+        lines = [line.strip() for line in normalized_text.strip().split('\n') if line.strip()]
+
+    def extract_from_line(line, prefix_patterns):
+        em = ''
+        em_m = re.search(email_pattern, line)
+        if em_m:
+            em = em_m.group(1).strip()
+            line = line.replace(em, ' ')
         
-        # 1. 대상 분류 (업체 vs 실사용자)
+        ph = ''
+        ph_m = re.search(phone_pattern, line)
+        if ph_m:
+            raw_ph = ph_m.group(1).strip()
+            digits = re.sub(r'[^\d]', '', raw_ph)
+            if len(digits) == 11 and digits.startswith('01'):
+                ph = f'{digits[:3]}-{digits[3:7]}-{digits[7:]}'
+            elif len(digits) == 10 and digits.startswith('01'):
+                ph = f'{digits[:3]}-{digits[3:6]}-{digits[6:]}'
+            elif len(digits) == 10 and digits.startswith('02'):
+                ph = f'{digits[:2]}-{digits[2:6]}-{digits[6:]}'
+            elif len(digits) == 9 and digits.startswith('02'):
+                ph = f'{digits[:2]}-{digits[2:5]}-{digits[5:]}'
+            elif len(digits) == 4:
+                ph = f'02-3408-{digits}'
+            else:
+                ph = raw_ph
+            line = line.replace(raw_ph, ' ')
+        
+        clean = line.strip()
+        clean = re.sub(r'^[^\w가-힣]+', '', clean).strip()
+        clean = re.sub(prefix_patterns, '', clean, flags=re.IGNORECASE).strip()
+        clean = re.sub(r'^[^\w가-힣]+', '', clean).strip()
+        clean = re.sub(r'[\(\)\[\]/,:：]', ' ', clean).strip()
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        return clean, ph, em
+
+    user_prefix = r'^(실사용자|사용자|담당교수|교수|연구원|신청자|기안자|성명|이름)[\s:：/\-]*'
+    vendor_prefix = r'^(업체담당자|업체|협력사|거래처|vendor|공급사|담당자|성명|이름)[\s:：/\-]*'
+
+    for idx, line in enumerate(lines):
         is_vendor = any(kw in line for kw in ['업체담당자', '업체', '협력사', '거래처', 'vendor', '공급사'])
         is_user = any(kw in line for kw in ['실사용자', '사용자', '담당교수', '교수', '연구원', '신청자', '기안자'])
-        
+
         target = 'user'
         if is_vendor:
             target = 'vendor'
@@ -881,48 +933,18 @@ def parse_smart_contact_memo(text):
             target = 'user'
         elif idx == 1:
             target = 'vendor'
-            
-        # 2. 이메일 추출
-        email = ''
-        em_match = re.search(email_pattern, line)
-        if em_match:
-            email = em_match.group(1).strip()
-            line = line.replace(email, ' ')
-            
-        # 3. 전화번호 추출 및 포맷팅 (01012345678 -> 010-1234-5678)
-        phone = ''
-        ph_match = re.search(phone_pattern, line)
-        if ph_match:
-            raw_ph = ph_match.group(1).strip()
-            digits = re.sub(r'[^\d]', '', raw_ph)
-            if len(digits) == 11 and digits.startswith('01'):
-                phone = f'{digits[:3]}-{digits[3:7]}-{digits[7:]}'
-            elif len(digits) == 10 and digits.startswith('01'):
-                phone = f'{digits[:3]}-{digits[3:6]}-{digits[6:]}'
-            elif len(digits) == 10 and digits.startswith('02'):
-                phone = f'{digits[:2]}-{digits[2:6]}-{digits[6:]}'
-            elif len(digits) == 9 and digits.startswith('02'):
-                phone = f'{digits[:2]}-{digits[2:5]}-{digits[5:]}'
-            elif len(digits) == 4:
-                phone = f'02-3408-{digits}'
-            else:
-                phone = raw_ph
-            line = line.replace(raw_ph, ' ')
-            
-        # 4. 라벨 및 불필요 특수기호 제거 후 남은 텍스트를 이름으로 처리
-        clean_name = line.strip()
-        clean_name = re.sub(r'^(실사용자|사용자|업체담당자|업체|협력사|담당자|신청자|성명|이름)[\s:：/\-]*', '', clean_name, flags=re.IGNORECASE)
-        clean_name = re.sub(r'[\(\)\[\]/,:：]', ' ', clean_name).strip()
-        clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-        
+
         if target == 'user':
-            if clean_name and not result['user_name']: result['user_name'] = clean_name
-            if phone and not result['user_phone']: result['user_phone'] = phone
-            if email and not result['user_email']: result['user_email'] = email
+            nm, ph, em = extract_from_line(line, user_prefix)
+            if nm and not result['user_name']: result['user_name'] = nm
+            if ph and not result['user_phone']: result['user_phone'] = ph
+            if em and not result['user_email']: result['user_email'] = em
         else:
-            if clean_name and not result['vendor_rep']: result['vendor_rep'] = clean_name
-            if phone and not result['vendor_phone']: result['vendor_phone'] = phone
-            if email and not result['vendor_email']: result['vendor_email'] = email
+            nm, ph, em = extract_from_line(line, vendor_prefix)
+            if nm and not result['vendor_rep']: result['vendor_rep'] = nm
+            if ph and not result['vendor_phone']: result['vendor_phone'] = ph
+            # 업체담당자 라인에 이메일이 없는 경우 공란 유지 (실사용자 이메일 침범 방지)
+            if em and not result['vendor_email']: result['vendor_email'] = em
 
     return result
 
@@ -1665,12 +1687,13 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
             # 세션 스테이트에 스마트 파서 값 세팅
             for i, cd in enumerate(valid_data):
                 sm = cd.get('smart_memo', {})
-                if sm.get('user_name'): st.session_state[f"u_nm_{i}"] = sm['user_name']
-                if sm.get('user_phone'): st.session_state[f"u_ph_{i}"] = sm['user_phone']
-                if sm.get('user_email'): st.session_state[f"u_em_{i}"] = sm['user_email']
-                if sm.get('vendor_rep'): st.session_state[f"v_rep_{i}"] = sm['vendor_rep']
-                if sm.get('vendor_phone'): st.session_state[f"v_ph_{i}"] = sm['vendor_phone']
-                if sm.get('vendor_email'): st.session_state[f"v_em_{i}"] = sm['vendor_email']
+                st.session_state[f"u_nm_{i}"] = sm.get('user_name', '')
+                st.session_state[f"u_ph_{i}"] = sm.get('user_phone', '')
+                st.session_state[f"u_em_{i}"] = sm.get('user_email', cd.get('email', ''))
+                st.session_state[f"v_rep_{i}"] = sm.get('vendor_rep', '')
+                st.session_state[f"v_ph_{i}"] = sm.get('vendor_phone', '')
+                # 업체담당자 이메일은 부재 시 무조건 공란("") 유지
+                st.session_state[f"v_em_{i}"] = sm.get('vendor_email', '')
         else:
             st.warning("입력된 텍스트가 없습니다. 먼저 텍스트를 붙여넣어주세요.")
 
@@ -1691,7 +1714,8 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
                         if parsed['user_email']: st.session_state[f"u_em_{i}"] = parsed['user_email']
                         if parsed['vendor_rep']: st.session_state[f"v_rep_{i}"] = parsed['vendor_rep']
                         if parsed['vendor_phone']: st.session_state[f"v_ph_{i}"] = parsed['vendor_phone']
-                        if parsed['vendor_email']: st.session_state[f"v_em_{i}"] = parsed['vendor_email']
+                        # 업체 이메일 없으면 공란으로 갱신
+                        st.session_state[f"v_em_{i}"] = parsed.get('vendor_email', '')
                         st.rerun()
 
                 c1, c2, c3 = st.columns(3)
@@ -1709,7 +1733,7 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
                 sm_data = cd.get('smart_memo', {})
                 default_u_nm = st.session_state.get(f"u_nm_{i}", sm_data.get('user_name', ''))
                 default_u_ph = st.session_state.get(f"u_ph_{i}", sm_data.get('user_phone', ''))
-                default_u_em = st.session_state.get(f"u_em_{i}", sm_data.get('user_email', ''))
+                default_u_em = st.session_state.get(f"u_em_{i}", sm_data.get('user_email', cd.get('email', '')))
 
                 st.caption("1) 실사용자 정보 (스마트 자동 추출)")
                 c_u1, c_u2, c_u3 = st.columns(3)
@@ -1719,26 +1743,51 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
 
                 default_v_rep = st.session_state.get(f"v_rep_{i}", sm_data.get('vendor_rep', ''))
                 default_v_ph = st.session_state.get(f"v_ph_{i}", sm_data.get('vendor_phone', ''))
-                default_v_em = st.session_state.get(f"v_em_{i}", sm_data.get('vendor_email', cd.get('email', '')))
+                # 💡 업체담당자 이메일은 실사용자 이메일(cd['email'])을 덮어쓰지 않고 부재 시 공란으로 둠
+                default_v_em = st.session_state.get(f"v_em_{i}", sm_data.get('vendor_email', ''))
 
-                st.caption("2) 협력사(업체) 담당자 정보")
+                st.caption("2) 협력사(업체) 담당자 정보 (이메일 미기재 시 직접 입력 가능)")
                 c_vr1, c_vr2, c_vr3 = st.columns(3)
                 with c_vr1: v_rep = st.text_input("업체담당자 성명", value=default_v_rep, key=f"v_rep_{i}")
                 with c_vr2: v_ph = st.text_input("업체담당자 연락처", value=default_v_ph, key=f"v_ph_{i}")
-                with c_vr3: v_em = st.text_input("업체담당자 이메일", value=default_v_em, key=f"v_em_{i}")
+                with c_vr3: v_em = st.text_input("업체담당자 이메일", value=default_v_em, key=f"v_em_{i}", placeholder="미기재 시 직접 입력")
 
-                st.caption("3) 구매/검수 담당자")
-                buyer_name = cd.get('buyer_name', '')
-                b_db = {"phone": "", "email": ""}
-                for key, val in USER_DB.items():
-                    if buyer_name in key: b_db = val; break
-                    
+                st.caption("3) 구매/검수 담당자 및 계약보증금")
                 c_b1, c_b2, c_b3 = st.columns(3)
-                with c_b1: b_nm = st.text_input("구매담당자", value=buyer_name, key=f"b_nm_{i}")
-                with c_b2: i_nm = st.text_input("검수담당자", value="경제용", key=f"i_nm_{i}")
+                with c_b1:
+                    buyer_options = ["권순철 사원", "김민석 사원", "직접입력"]
+                    extracted_buyer = cd.get('buyer_name', '')
+                    default_b_idx = 0
+                    if "김민석" in extracted_buyer:
+                        default_b_idx = 1
+                    elif "권순철" in extracted_buyer:
+                        default_b_idx = 0
+
+                    sel_buyer = st.selectbox("구매계약 담당자", buyer_options, index=default_b_idx, key=f"b_sel_{i}")
+                    if sel_buyer == "직접입력":
+                        b_nm = st.text_input("구매담당자 성명", value=extracted_buyer, key=f"b_nm_custom_{i}")
+                        b_ph = st.text_input("구매담당자 연락처", value="", key=f"b_ph_custom_{i}")
+                        b_em = st.text_input("구매담당자 이메일", value="", key=f"b_em_custom_{i}")
+                    else:
+                        staff_info = BUYER_STAFF[sel_buyer]
+                        b_nm = staff_info["name"]
+                        b_ph = staff_info["phone"]
+                        b_em = staff_info["email"]
+                        st.caption(f"📞 {b_ph} | ✉️ {b_em}")
+
+                with c_b2:
+                    i_nm = st.text_input("검수담당자", value="경제용", key=f"i_nm_{i}")
+                    st.caption("📞 02-3408-4058 | ✉️ rudwpdyd@sejong.ac.kr")
                 
                 amt_val = safe_int(e_amt)
-                with c_b3: e_deposit = st.text_input("계약보증금액", value=cd.get('con_deposit', str(amt_val // 10)), key=f"e_dep_{i}")
+                with c_b3:
+                    # 💡 기본 계약보증금: 계약금액의 10% (1000만원 미만도 지급각서에 정확히 반영)
+                    auto_deposit = amt_val // 10 if amt_val > 0 else 0
+                    default_dep = str(safe_int(cd.get('con_deposit')) or auto_deposit)
+                    e_deposit = st.text_input("계약보증금액", value=default_dep, key=f"e_dep_{i}")
+                    calc_deposit = safe_int(e_deposit) or auto_deposit
+                    if calc_deposit > 0:
+                        st.caption(f"￦ {calc_deposit:,} (지급각서 반영)")
 
                 if st.button(f"📄 [{i+1}번] 워드파일 생성 준비", key=f"btn_gen_{i}"):
                     if not e_name or amt_val <= 0 or not e_ven or not u_nm:
@@ -1747,14 +1796,24 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
                         try:
                             tpl_name = "template_over10mil.docx" if amt_val >= 10000000 else "template_under10mil.docx"
                             doc = DocxTemplate(tpl_name)
+                            
+                            final_deposit_str = f"{calc_deposit:,}" if calc_deposit > 0 else ""
                             context = {
-                                "구매담당자": b_nm, "구매담당자_연락처": b_db.get('phone', ''), "구매담당자_메일": b_db.get('email', ''),
-                                "발주_개요": e_name, "계약금액": f"{amt_val:,}", 
-                                "납품방법": e_deliv, "납품장소": e_loc,
-                                "실사용자": u_nm, "실사용자_연락처": u_ph, "실사용자_메일": u_em,
+                                "구매담당자": b_nm, 
+                                "구매담당자_연락처": b_ph, 
+                                "구매담당자_메일": b_em,
+                                "발주_개요": e_name, 
+                                "계약금액": f"{amt_val:,}", 
+                                "납품방법": e_deliv, 
+                                "납품장소": e_loc,
+                                "실사용자": u_nm, 
+                                "실사용자_연락처": u_ph, 
+                                "실사용자_메일": u_em,
                                 "협력사": e_ven,
-                                "검수담당자": i_nm, "검수담당자_연락처": "02-3408-4058", "검수담당자_메일": "rudwpdyd@sejong.ac.kr",
-                                "계약보증금액": f"{safe_int(e_deposit):,}" if amt_val >= 10000000 else ""
+                                "검수담당자": i_nm, 
+                                "검수담당자_연락처": "02-3408-4058", 
+                                "검수담당자_메일": "rudwpdyd@sejong.ac.kr",
+                                "계약보증금액": final_deposit_str
                             }
                             doc.render(context)
                             ts = BytesIO()
