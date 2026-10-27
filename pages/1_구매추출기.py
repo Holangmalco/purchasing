@@ -69,6 +69,7 @@ DEFAULT_APP_CONFIG = {
     "headline_extractor": "구매추출기",
     "headline_contract": "구매계약관리",
     "btn_load_contract": "계약 데이터 불러오기",
+    "admin_pin": "1234",
     "buyer_staff": {
         "권순철 사원": {"name": "권순철", "phone": "02-6935-2624", "email": "hagrid0924@sejong.ac.kr"},
         "김민석 사원": {"name": "김민석", "phone": "02-3408-3032", "email": "sejongtwice@sejong.ac.kr"}
@@ -1052,12 +1053,56 @@ def parse_smart_contact_memo(text):
 # ==========================================
 # 5. 화면 UI 구성
 # ==========================================
+def render_top_header(title_text):
+    col_t, col_l = st.columns([11, 1])
+    with col_t:
+        st.title(title_text)
+    with col_l:
+        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+        is_auth = st.session_state.get("is_admin_auth", False)
+        safe_key_suffix = f"_{abs(hash(title_text)) % 10000}"
+        if not is_auth:
+            with st.popover("🔒", help="관리자 인증 (클릭)"):
+                st.markdown("##### 🔑 관리자 PIN")
+                pin_val = st.text_input("PIN 입력", type="password", key=f"pin_in{safe_key_suffix}", placeholder="4자리 PIN")
+                if st.button("인증", key=f"btn_auth{safe_key_suffix}", use_container_width=True, type="primary"):
+                    saved_pin = str(APP_CONFIG.get("admin_pin", "1234")).strip()
+                    if pin_val.strip() == saved_pin:
+                        st.session_state["is_admin_auth"] = True
+                        st.session_state["main_menu"] = "⚙️ 관리자 설정"
+                        st.success("인증 완료!")
+                        time.sleep(0.3)
+                        st.rerun()
+                    else:
+                        st.error("PIN 번호 불일치")
+        else:
+            with st.popover("🔓", help="관리자 모드 활성화됨"):
+                st.markdown("##### ⚙️ 관리자 모드")
+                if st.button("설정 화면 이동", key=f"btn_go{safe_key_suffix}", use_container_width=True):
+                    st.session_state["main_menu"] = "⚙️ 관리자 설정"
+                    st.rerun()
+                if st.button("🔒 로그아웃 (숨김)", key=f"btn_out{safe_key_suffix}", use_container_width=True):
+                    st.session_state["is_admin_auth"] = False
+                    st.session_state["main_menu"] = "💰 구매추출기"
+                    st.rerun()
+
 with st.sidebar:
     s_title = APP_CONFIG.get("sidebar_title", "💼 구매 업무 보조")
     st.markdown(f"## {s_title}")
+    
+    # 관리자 인증 시에만 '⚙️ 관리자 설정' 메뉴가 노출됨
+    base_menus = ["💰 구매추출기", "🤝 구매계약관리"]
+    if st.session_state.get("is_admin_auth", False):
+        base_menus.append("⚙️ 관리자 설정")
+        
+    current_menu_choice = st.session_state.get("main_menu", "💰 구매추출기")
+    if current_menu_choice not in base_menus:
+        current_menu_choice = "💰 구매추출기"
+        st.session_state["main_menu"] = current_menu_choice
+
     menu = st.radio(
         "메뉴 선택", 
-        ["💰 구매추출기", "🤝 구매계약관리", "⚙️ 관리자 설정"], 
+        base_menus, 
         key="main_menu"
     )
     st.divider()
@@ -1067,11 +1112,18 @@ with st.sidebar:
         if st.checkbox("보관함 대시보드 열기", key="open_history_db"):
             menu = "🕒 분석내용 불러오기"
             
-    st.caption("✅ 구매 보조 툴 가동 중")
+    if st.session_state.get("is_admin_auth", False):
+        st.caption("🔓 관리자 모드 활성화됨")
+        if st.button("🔒 관리자 로그아웃", key="btn_side_logout", use_container_width=True):
+            st.session_state["is_admin_auth"] = False
+            st.session_state["main_menu"] = "💰 구매추출기"
+            st.rerun()
+    else:
+        st.caption("✅ 구매 보조 툴 가동 중")
 
 # ----------------- [1. 구매요청 분석] -----------------
 if menu in ["💰 구매추출기", "📋 구매요청 분석"]:
-    st.title(f"💰 {APP_CONFIG.get('headline_extractor', '구매추출기')}")
+    render_top_header(f"💰 {APP_CONFIG.get('headline_extractor', '구매추출기')}")
     
     def on_critical_condition_change():
         if SESSION_REQ_KEY in st.session_state:
@@ -1733,7 +1785,7 @@ if menu in ["💰 구매추출기", "📋 구매요청 분석"]:
 
 # ----------------- [2. 구매계약 분석 및 발주서 자동 생성] -----------------
 elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
-    st.title(f"🤝 {APP_CONFIG.get('headline_contract', '구매계약관리')}")
+    render_top_header(f"🤝 {APP_CONFIG.get('headline_contract', '구매계약관리')}")
     st.info("여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.")
     
     if 'con_input_count' not in st.session_state:
@@ -1960,7 +2012,7 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
 
 # ----------------- [3. 분석내용 불러오기] -----------------
 elif menu == "🕒 분석내용 불러오기":
-    st.title("🕒 과거 작업 내역 대시보드")
+    render_top_header("🕒 과거 작업 내역 대시보드")
     st.info("이전에 작업하고 저장해둔 분석 내역을 엑셀 대장처럼 확인하고, 언제든 다시 불러와서 이어서 작업할 수 있습니다.")
     
     cache_list = get_cache_list()
@@ -2083,7 +2135,11 @@ elif menu == "🕒 분석내용 불러오기":
 
 # ----------------- [4. 관리자 설정 화면] -----------------
 elif menu == "⚙️ 관리자 설정":
-    st.title("⚙️ 관리자 설정")
+    if not st.session_state.get("is_admin_auth", False):
+        st.error("🔒 관리자 전용 화면입니다. 우측 상단의 자물쇠(🔒) 아이콘을 클릭하여 PIN을 입력해주세요.")
+        st.stop()
+
+    render_top_header("⚙️ 관리자 설정")
     st.caption("시스템 명칭, 화면 헤드라인 문구 및 담당자 정보를 손쉽게 변경하고 관리할 수 있습니다.")
     
     # 세션에 임시 설정 버퍼가 없으면 현재 설정으로 로드
@@ -2108,11 +2164,17 @@ elif menu == "⚙️ 관리자 설정":
         t_con = st.text_input("4. 2번 화면(구매계약관리) 제목", value=admin_cfg.get("headline_contract", "구매계약관리"), key="cfg_con_title")
         t_btn = st.text_input("5. 계약 데이터 불러오기 버튼 문구", value=admin_cfg.get("btn_load_contract", "계약 데이터 불러오기"), key="cfg_btn_title")
         
+        st.markdown("---")
+        st.markdown("#### 🔐 관리자 PIN 번호 변경")
+        st.caption("우측 상단 자물쇠(🔒) 클릭 시 입력하는 비밀번호입니다. (기본값: 1234)")
+        t_pin = st.text_input("새 관리자 PIN", value=str(admin_cfg.get("admin_pin", "1234")), key="cfg_admin_pin", type="password")
+        
         admin_cfg["app_title"] = t_app.strip() or "구매 업무 보조"
         admin_cfg["sidebar_title"] = t_side.strip() or "💼 구매 업무 보조"
         admin_cfg["headline_extractor"] = t_ext.strip() or "구매추출기"
         admin_cfg["headline_contract"] = t_con.strip() or "구매계약관리"
         admin_cfg["btn_load_contract"] = t_btn.strip() or "계약 데이터 불러오기"
+        admin_cfg["admin_pin"] = t_pin.strip() or "1234"
         
     with tab_buyer:
         st.markdown("#### 👥 구매계약 담당자 목록")
@@ -2179,7 +2241,7 @@ elif menu == "⚙️ 관리자 설정":
         insp["email"] = i_email.strip()
         
     st.divider()
-    c_btn1, c_btn2 = st.columns([1, 1])
+    c_btn1, c_btn2, c_btn3 = st.columns([1, 1, 1])
     with c_btn1:
         if st.button("💾 설정 저장하기", type="primary", use_container_width=True):
             if save_app_config(admin_cfg):
@@ -2195,4 +2257,9 @@ elif menu == "⚙️ 관리자 설정":
             st.session_state["admin_cfg"] = json.loads(json.dumps(DEFAULT_APP_CONFIG))
             st.info("기본 설정으로 복원되었습니다.")
             time.sleep(0.5)
+            st.rerun()
+    with c_btn3:
+        if st.button("🔒 관리자 로그아웃 (숨김)", type="secondary", use_container_width=True):
+            st.session_state["is_admin_auth"] = False
+            st.session_state["main_menu"] = "💰 구매추출기"
             st.rerun()
