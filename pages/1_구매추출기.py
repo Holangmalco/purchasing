@@ -1069,9 +1069,7 @@ def render_top_header(title_text):
                     saved_pin = str(APP_CONFIG.get("admin_pin", "1234")).strip()
                     if pin_val.strip() == saved_pin:
                         st.session_state["is_admin_auth"] = True
-                        st.session_state["main_menu"] = "⚙️ 관리자 설정"
-                        st.success("인증 완료!")
-                        time.sleep(0.3)
+                        st.session_state["nav_target"] = "⚙️ 관리자 설정"
                         st.rerun()
                     else:
                         st.error("PIN 번호 불일치")
@@ -1079,17 +1077,21 @@ def render_top_header(title_text):
             with st.popover("🔓", help="관리자 모드 활성화됨"):
                 st.markdown("##### ⚙️ 관리자 모드")
                 if st.button("설정 화면 이동", key=f"btn_go{safe_key_suffix}", use_container_width=True):
-                    st.session_state["main_menu"] = "⚙️ 관리자 설정"
+                    st.session_state["nav_target"] = "⚙️ 관리자 설정"
                     st.rerun()
                 if st.button("🔒 로그아웃 (숨김)", key=f"btn_out{safe_key_suffix}", use_container_width=True):
                     st.session_state["is_admin_auth"] = False
-                    st.session_state["main_menu"] = "💰 구매추출기"
+                    st.session_state["nav_target"] = "💰 구매추출기"
                     st.rerun()
 
 with st.sidebar:
     s_title = APP_CONFIG.get("sidebar_title", "💼 구매 업무 보조")
     st.markdown(f"## {s_title}")
     
+    # 예약된 이동 타겟이 있으면 radio 생성 전에 반영
+    if "nav_target" in st.session_state:
+        st.session_state["main_menu"] = st.session_state.pop("nav_target")
+        
     # 관리자 인증 시에만 '⚙️ 관리자 설정' 메뉴가 노출됨
     base_menus = ["💰 구매추출기", "🤝 구매계약관리"]
     if st.session_state.get("is_admin_auth", False):
@@ -1116,7 +1118,7 @@ with st.sidebar:
         st.caption("🔓 관리자 모드 활성화됨")
         if st.button("🔒 관리자 로그아웃", key="btn_side_logout", use_container_width=True):
             st.session_state["is_admin_auth"] = False
-            st.session_state["main_menu"] = "💰 구매추출기"
+            st.session_state["nav_target"] = "💰 구매추출기"
             st.rerun()
     else:
         st.caption("✅ 구매 보조 툴 가동 중")
@@ -2115,7 +2117,7 @@ elif menu == "🕒 분석내용 불러오기":
                 
                 st.session_state[SESSION_REQ_KEY] = True
                 st.session_state['is_saved'] = True  
-                st.session_state["main_menu"] = "💰 구매추출기"
+                st.session_state["nav_target"] = "💰 구매추출기"
                 if "open_history_db" in st.session_state:
                     st.session_state["open_history_db"] = False
             else:
@@ -2261,5 +2263,5 @@ elif menu == "⚙️ 관리자 설정":
     with c_btn3:
         if st.button("🔒 관리자 로그아웃 (숨김)", type="secondary", use_container_width=True):
             st.session_state["is_admin_auth"] = False
-            st.session_state["main_menu"] = "💰 구매추출기"
+            st.session_state["nav_target"] = "💰 구매추출기"
             st.rerun()
