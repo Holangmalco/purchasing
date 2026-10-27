@@ -64,36 +64,31 @@ def get_config_path():
     return p1
 
 DEFAULT_APP_CONFIG = {
+    # 1. 전역 및 사이드바
     "app_title": "구매 업무 보조",
     "sidebar_title": "💼 구매 업무 보조",
     "menu_extractor": "💰 구매추출기",
     "menu_contract": "🤝 구매계약관리",
-    "sidebar_status": "✅ 구매 보조 툴 가동 중",
-
-    "headline_extractor": "💰 구매추출기",
-    "extractor_step1": "📥 서류 및 정보 입력",
-    "extractor_sec1": "📂 1. 기본 정보 선택",
-    "extractor_sec2": "📝 2. ERP 텍스트 복사",
-    "extractor_sec3": "📎 3. 파일 직접 업로드",
-    "extractor_btn_analyze": "🚀 전체 데이터 통합 분석 시작",
-    "extractor_step2": "📤 데이터 분석 및 검증 결과",
-    "extractor_res_sec_erp": "📝 ERP 기본 정보",
-    "extractor_res_sec_item": "📦 ERP 품목 내역",
-    "extractor_res_sec_opinion": "✍️ 결재 의견 (자동 생성)",
-    "extractor_res_sec_vendor": "📁 업체 정보 통합 및 추천 폴더명",
-    "extractor_res_sec_bank": "🏦 통장사본 계좌정보",
-
-    "headline_contract": "🤝 구매계약관리",
-    "contract_desc": "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.",
-    "btn_load_contract": "계약 데이터 불러오기",
-    "contract_sec_user": "1) 실사용자 정보 (스마트 자동 추출)",
-    "contract_sec_vendor": "2) 협력사(업체) 담당자 정보 (이메일 미기재 시 직접 입력 가능)",
-    "contract_sec_staff": "3) 구매/검수 담당자 및 계약보증금",
-
-    "headline_history": "🕒 과거 작업 내역 대시보드",
-    "headline_admin": "⚙️ 관리자 설정",
-
     "admin_pin": "1234",
+    # 2. 구매추출기 화면
+    "ext_main_title": "💰 구매추출기",
+    "ext_step1_title": "📥 정보 입력 및 서류 업로드",
+    "ext_sub1_title": "📂 1. 기본 정보 선택",
+    "ext_sub2_title": "📝 2. ERP 텍스트 복사",
+    "ext_sub3_title": "📎 3. AI OCR",
+    "ext_btn_analyze": "🚀 전체 데이터 통합 분석 시작",
+    "ext_step2_title": "📤 [STEP 2] 분석 결과",
+    "ext_erp_basic_title": "📝 ERP 기본 정보",
+    "ext_erp_items_title": "📦 ERP 품목 내역",
+    "ext_bank_title": "🏦 통장사본 계좌정보",
+    # 3. 구매계약관리 화면
+    "con_main_title": "🤝 구매계약관리",
+    "con_desc": "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.",
+    "con_card_title": "📄 [계약 {no}] 데이터 입력",
+    "btn_load_contract": "계약 데이터 불러오기",
+    "con_btn_gen": "📄 [{no}번] 워드파일 생성 준비",
+    "con_btn_dl": "📥 [{no}번] 완성된 발주요청서 다운로드 (.docx)",
+    # 4. 담당자 정보
     "buyer_staff": {
         "권순철 사원": {"name": "권순철", "phone": "02-6935-2624", "email": "hagrid0924@sejong.ac.kr"},
         "김민석 사원": {"name": "김민석", "phone": "02-3408-3032", "email": "sejongtwice@sejong.ac.kr"}
@@ -107,16 +102,30 @@ DEFAULT_APP_CONFIG = {
 
 def load_app_config():
     c_path = get_config_path()
+    merged = DEFAULT_APP_CONFIG.copy()
     if os.path.exists(c_path):
         try:
             with open(c_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                merged = DEFAULT_APP_CONFIG.copy()
                 merged.update(data)
-                return merged
+                if "headline_extractor" in data and "ext_main_title" not in data:
+                    merged["ext_main_title"] = data["headline_extractor"]
+                if "headline_contract" in data and "con_main_title" not in data:
+                    merged["con_main_title"] = data["headline_contract"]
         except Exception:
             pass
-    return DEFAULT_APP_CONFIG.copy()
+            
+    # 로컬/서버 전용 PIN 보존 파일 확인
+    pin_file = os.path.join(os.path.dirname(c_path), ".admin_pin.key")
+    if os.path.exists(pin_file):
+        try:
+            with open(pin_file, "r", encoding="utf-8") as pf:
+                custom_pin = pf.read().strip()
+                if custom_pin:
+                    merged["admin_pin"] = custom_pin
+        except:
+            pass
+    return merged
 
 def save_app_config(new_cfg):
     global APP_CONFIG
@@ -124,11 +133,21 @@ def save_app_config(new_cfg):
     try:
         with open(c_path, "w", encoding="utf-8") as f:
             json.dump(new_cfg, f, ensure_ascii=False, indent=2)
-        if "APP_CONFIG" in globals():
-            APP_CONFIG.update(new_cfg)
+            
+        if "admin_pin" in new_cfg:
+            pin_file = os.path.join(os.path.dirname(c_path), ".admin_pin.key")
+            try:
+                with open(pin_file, "w", encoding="utf-8") as pf:
+                    pf.write(str(new_cfg["admin_pin"]).strip())
+            except:
+                pass
+        APP_CONFIG = load_app_config()
         return True
     except Exception:
         return False
+
+def get_ui_text(key, default_fallback=""):
+    return APP_CONFIG.get(key, DEFAULT_APP_CONFIG.get(key, default_fallback))
 
 APP_CONFIG = load_app_config()
 
@@ -1080,93 +1099,15 @@ def parse_smart_contact_memo(text):
 # ==========================================
 # 5. 화면 UI 구성
 # ==========================================
-def editable_headline(config_key, default_text, level="h3", prefix="", key_suffix=""):
-    """
-    관리자 모드이고 ui_edit_mode가 켜져 있으면 인라인 수정 UI를 보여주고,
-    평상시에는 일반 텍스트/헤더로 렌더링하는 범용 헬퍼 함수
-    """
-    current_val = APP_CONFIG.get(config_key, default_text)
-    is_edit = st.session_state.get("is_admin_auth", False) and st.session_state.get("ui_edit_mode", False)
-    
-    if is_edit:
-        with st.container(border=True):
-            c_in1, c_in2 = st.columns([5, 1])
-            with c_in1:
-                label_text = f"✏️ [위치: {prefix}]" if prefix else f"✏️ [문구 편집: {config_key}]"
-                new_val = st.text_input(label_text, value=current_val, key=f"inline_{config_key}_{key_suffix}")
-            with c_in2:
-                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                if st.button("💾", key=f"btn_s_{config_key}_{key_suffix}", help="이 위치의 문구 저장"):
-                    APP_CONFIG[config_key] = new_val.strip() or default_text
-                    save_app_config(APP_CONFIG)
-                    st.success("저장됨!")
-                    time.sleep(0.3)
-                    st.rerun()
-    else:
-        if level == "h1":
-            st.title(current_val)
-        elif level == "h2":
-            st.markdown(f"## {current_val}")
-        elif level == "h3":
-            st.markdown(f"### {current_val}")
-        elif level == "h4":
-            st.markdown(f"#### {current_val}")
-        elif level == "h5":
-            st.markdown(f"##### {current_val}")
-        elif level == "caption":
-            st.caption(current_val)
-        elif level == "info":
-            st.info(current_val)
-        else:
-            st.write(current_val)
-
-def render_top_header(title_key, default_title):
-    title_text = APP_CONFIG.get(title_key, default_title)
-    is_auth = st.session_state.get("is_admin_auth", False)
-    safe_key_suffix = f"_{abs(hash(title_key)) % 10000}"
-    
-    if is_auth:
-        col_t, col_edit, col_l = st.columns([7, 4, 1])
-        with col_t:
-            is_edit_mode = st.session_state.get("ui_edit_mode", False)
-            if is_edit_mode:
-                c_in1, c_in2 = st.columns([5, 1])
-                with c_in1:
-                    new_t = st.text_input("✏️ [화면 대제목 편집]", value=title_text, key=f"top_title_{title_key}")
-                with c_in2:
-                    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                    if st.button("💾", key=f"btn_s_top_{title_key}", help="대제목 저장"):
-                        APP_CONFIG[title_key] = new_t.strip() or default_title
-                        save_app_config(APP_CONFIG)
-                        st.rerun()
-            else:
-                st.title(title_text)
-                
-        with col_edit:
-            st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
-            st.toggle("✏️ 화면 문구 직접 수정 모드", key="ui_edit_mode", help="실제 화면 위치에서 타이틀/헤더를 직접 수정합니다.")
-            
-        with col_l:
-            st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
-            with st.popover("🔓", help="관리자 모드 활성화됨"):
-                st.markdown("##### ⚙️ 관리자 모드")
-                if st.button("⚙️ 설정 화면 이동", key=f"btn_go{safe_key_suffix}", use_container_width=True):
-                    st.session_state["nav_target"] = "⚙️ 관리자 설정"
-                    st.rerun()
-                if st.button("🔒 로그아웃 (숨김)", key=f"btn_out{safe_key_suffix}", use_container_width=True):
-                    st.session_state["is_admin_auth"] = False
-                    st.session_state["ui_edit_mode"] = False
-                    st.session_state["nav_target"] = APP_CONFIG.get("menu_extractor", "💰 구매추출기")
-                    st.rerun()
-                    
-        if st.session_state.get("ui_edit_mode", False):
-            st.info("💡 **화면 문구 직접 수정 모드 ON**: 화면 속 각 제목/헤드라인 위치에 입력창이 열려 있습니다. 원하는 단어로 바꾸고 [💾]를 누르면 즉시 저장됩니다.")
-    else:
-        col_t, col_l = st.columns([11, 1])
-        with col_t:
-            st.title(title_text)
-        with col_l:
-            st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+def render_top_header(title_text):
+    col_t, col_l = st.columns([11, 1])
+    with col_t:
+        st.title(title_text)
+    with col_l:
+        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+        is_auth = st.session_state.get("is_admin_auth", False)
+        safe_key_suffix = f"_{abs(hash(title_text)) % 10000}"
+        if not is_auth:
             with st.popover("🔒", help="관리자 인증 (클릭)"):
                 st.markdown("##### 🔑 관리자 PIN")
                 pin_val = st.text_input("PIN 입력", type="password", key=f"pin_in{safe_key_suffix}", placeholder="4자리 PIN")
@@ -1178,22 +1119,54 @@ def render_top_header(title_key, default_title):
                         st.rerun()
                     else:
                         st.error("PIN 번호 불일치")
+        else:
+            with st.popover("🔓", help="관리자 모드 활성화됨"):
+                st.markdown("##### ⚙️ 관리자 모드")
+                if st.button("설정 화면 이동", key=f"btn_go{safe_key_suffix}", use_container_width=True):
+                    st.session_state["nav_target"] = "⚙️ 관리자 설정"
+                    st.rerun()
+                if st.button("🔒 로그아웃 (숨김)", key=f"btn_out{safe_key_suffix}", use_container_width=True):
+                    st.session_state["is_admin_auth"] = False
+                    st.session_state["nav_target"] = get_ui_text("menu_extractor", "💰 구매추출기")
+                    st.rerun()
+
+def render_admin_edit_toolbar():
+    if st.session_state.get("is_admin_auth", False):
+        with st.container(border=True):
+            c_tb1, c_tb2 = st.columns([7, 3])
+            with c_tb1:
+                st.toggle(
+                    "✏️ 화면 문구 직접 수정 모드 (기존 위치에서 바로 바꾸기)", 
+                    key="ui_live_edit_mode", 
+                    help="스위치를 켜면 현재 화면의 제목/문구를 그 자리에서 바로 수정할 수 있습니다."
+                )
+            with c_tb2:
+                if st.session_state.get("ui_live_edit_mode", False):
+                    if st.button("💾 화면 문구 즉시 저장", type="primary", use_container_width=True, key="btn_save_live_ui"):
+                        changed = False
+                        for k in list(DEFAULT_APP_CONFIG.keys()):
+                            live_k = f"live_{k}"
+                            if live_k in st.session_state:
+                                val = str(st.session_state[live_k]).strip()
+                                if val:
+                                    APP_CONFIG[k] = val
+                                    changed = True
+                        if changed:
+                            save_app_config(APP_CONFIG)
+                            st.success("✅ 화면 문구가 저장되었습니다!")
+                            time.sleep(0.5)
+                            st.rerun()
 
 with st.sidebar:
-    s_title = APP_CONFIG.get("sidebar_title", "💼 구매 업무 보조")
+    s_title = get_ui_text("sidebar_title", "💼 구매 업무 보조")
     st.markdown(f"## {s_title}")
-    
-    m_ext = APP_CONFIG.get("menu_extractor", "💰 구매추출기")
-    m_con = APP_CONFIG.get("menu_contract", "🤝 구매계약관리")
     
     # 예약된 이동 타겟이 있으면 radio 생성 전에 반영
     if "nav_target" in st.session_state:
-        target = st.session_state.pop("nav_target")
-        if target == "💰 구매추출기": target = m_ext
-        elif target == "🤝 구매계약관리": target = m_con
-        st.session_state["main_menu"] = target
+        st.session_state["main_menu"] = st.session_state.pop("nav_target")
         
-    # 관리자 인증 시에만 '⚙️ 관리자 설정' 메뉴가 노출됨
+    m_ext = get_ui_text("menu_extractor", "💰 구매추출기")
+    m_con = get_ui_text("menu_contract", "🤝 구매계약관리")
     base_menus = [m_ext, m_con]
     if st.session_state.get("is_admin_auth", False):
         base_menus.append("⚙️ 관리자 설정")
@@ -1219,15 +1192,23 @@ with st.sidebar:
         st.caption("🔓 관리자 모드 활성화됨")
         if st.button("🔒 관리자 로그아웃", key="btn_side_logout", use_container_width=True):
             st.session_state["is_admin_auth"] = False
-            st.session_state["ui_edit_mode"] = False
             st.session_state["nav_target"] = m_ext
             st.rerun()
     else:
-        st.caption(APP_CONFIG.get("sidebar_status", "✅ 구매 보조 툴 가동 중"))
+        st.caption("✅ 구매 보조 툴 가동 중")
 
 # ----------------- [1. 구매요청 분석] -----------------
+m_ext = get_ui_text("menu_extractor", "💰 구매추출기")
+m_con = get_ui_text("menu_contract", "🤝 구매계약관리")
 if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
-    render_top_header("headline_extractor", "💰 구매추출기")
+    ext_t = get_ui_text("ext_main_title", "💰 구매추출기")
+    render_top_header(ext_t)
+    render_admin_edit_toolbar()
+    
+    is_live = st.session_state.get("ui_live_edit_mode", False) and st.session_state.get("is_admin_auth", False)
+    if is_live:
+        st.info("💡 **화면 문구 직접 수정 모드 ON**: 아래 각 위치의 텍스트 상자를 수정한 뒤 상단의 [💾 화면 문구 즉시 저장]을 누르면 바로 반영됩니다.")
+        st.text_input("📍 [위치: 최상단 대제목]", value=ext_t, key="live_ext_main_title")
     
     def on_critical_condition_change():
         if SESSION_REQ_KEY in st.session_state:
@@ -1236,9 +1217,17 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
         st.session_state['ai_errors'] = []
         st.session_state['is_saved'] = False
     
-    editable_headline("extractor_step1", "📥 서류 및 정보 입력", level="h3", prefix="1단계 전체 구역 제목")
+    step1_t = get_ui_text("ext_step1_title", "📥 정보 입력 및 서류 업로드")
+    if is_live:
+        st.text_input("📍 [위치: STEP 1 섹션 제목]", value=step1_t, key="live_ext_step1_title")
+    else:
+        st.write(f"### {step1_t}")
     
-    editable_headline("extractor_sec1", "📂 1. 기본 정보 선택", level="h4", prefix="1번 기본 정보 선택 소제목")
+    sub1_t = get_ui_text("ext_sub1_title", "📂 1. 기본 정보 선택")
+    if is_live:
+        st.text_input("📍 [위치: 1번 항목 소제목]", value=sub1_t, key="live_ext_sub1_title")
+    else:
+        st.markdown(f"#### {sub1_t}")
     c_type1, c_type2 = st.columns(2)
 
     with c_type1:
@@ -1249,7 +1238,11 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
     col_in1, col_in2 = st.columns(2)
     with col_in1:
         with st.container(border=True):
-            editable_headline("extractor_sec2", "📝 2. ERP 텍스트 복사", level="h4", prefix="2번 ERP 텍스트 복사 소제목")
+            sub2_t = get_ui_text("ext_sub2_title", "📝 2. ERP 텍스트 복사")
+            if is_live:
+                st.text_input("📍 [위치: 2번 항목 소제목]", value=sub2_t, key="live_ext_sub2_title")
+            else:
+                st.markdown(f"#### {sub2_t}")
             
             if "p_req" not in st.session_state: st.session_state["p_req"] = ""
             if "p_fin" not in st.session_state: st.session_state["p_fin"] = ""
@@ -1266,7 +1259,11 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
             
     with col_in2:
         with st.container(border=True):
-            editable_headline("extractor_sec3", "📎 3. 파일 직접 업로드", level="h4", prefix="3번 파일 업로드 소제목")
+            sub3_t = get_ui_text("ext_sub3_title", "📎 3. AI OCR")
+            if is_live:
+                st.text_input("📍 [위치: 3번 항목 소제목]", value=sub3_t, key="live_ext_sub3_title")
+            else:
+                st.markdown(f"#### {sub3_t}")
             st.caption("견적서 및 사업자등록증 (드래그 앤 드롭)")
             
             if "file_key" not in st.session_state: st.session_state["file_key"] = 0
@@ -1285,9 +1282,11 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
                 "- ✅ **공사 확인:** 시설공사/장비설치 확인서 첨부 여부 (해당 시)\n"
             )
         
+    btn_ana_t = get_ui_text("ext_btn_analyze", "🚀 전체 데이터 통합 분석 시작")
+    if is_live:
+        st.text_input("📍 [위치: 분석 버튼 문구]", value=btn_ana_t, key="live_ext_btn_analyze")
     col_btn1, col_btn2 = st.columns(2)
-    btn_analyze_txt = APP_CONFIG.get("extractor_btn_analyze", "🚀 전체 데이터 통합 분석 시작")
-    with col_btn1: start_all = st.button(btn_analyze_txt, width="stretch", type="primary")
+    with col_btn1: start_all = st.button(btn_ana_t, width="stretch", type="primary")
         
     def reset_all_state():
         st.session_state["p_req"] = ""  
@@ -1350,7 +1349,11 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
 
     if st.session_state.get(SESSION_REQ_KEY):
         st.divider()
-        editable_headline("extractor_step2", "📤 데이터 분석 및 검증 결과", level="h3", prefix="2단계 분석 결과 구역 제목")
+        step2_t = get_ui_text("ext_step2_title", "📤 [STEP 2] 분석 결과")
+        if is_live:
+            st.text_input("📍 [위치: STEP 2 섹션 제목]", value=step2_t, key="live_ext_step2_title")
+        else:
+            st.write(f"### {step2_t}")
 
         if st.session_state.get('api_failed', False):
             ai_errors = st.session_state.get('ai_errors', [])
@@ -1751,7 +1754,11 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
             st.info("📄 첨부된 서류가 없어 AI 교차 검증(금액/품목 대조)은 생략하고 ERP 텍스트 분석 결과만 출력합니다.")
 
         st.divider()
-        editable_headline("extractor_res_sec_erp", "📝 ERP 기본 정보", level="h4", prefix="ERP 기본 정보 소제목")
+        erp_bas_t = get_ui_text("ext_erp_basic_title", "📝 ERP 기본 정보")
+        if is_live:
+            st.text_input("📍 [위치: 기본 정보 소제목]", value=erp_bas_t, key="live_ext_erp_basic_title")
+        else:
+            st.write(f"#### {erp_bas_t}")
         r1_c1, r1_c2, r1_c3 = st.columns(3)
         with r1_c1: display_status_value("🔢 구매요구번호", base_data['req_no'])
         with r1_c2: display_status_value("📌 과제번호", base_data['p_no'])
@@ -1763,7 +1770,11 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
         with r2_c3: display_status_value("📧 연구책임자 정보", base_data['pi_formatted'])
         
         st.divider()
-        editable_headline("extractor_res_sec_item", "📦 ERP 품목 내역", level="h4", prefix="ERP 품목 내역 소제목")
+        erp_itm_t = get_ui_text("ext_erp_items_title", "📦 ERP 품목 내역")
+        if is_live:
+            st.text_input("📍 [위치: 품목 내역 소제목]", value=erp_itm_t, key="live_ext_erp_items_title")
+        else:
+            st.write(f"#### {erp_itm_t}")
         if item_list:
             t_data = []
             for i, itm in enumerate(item_list):
@@ -1792,13 +1803,13 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
             st.warning("품목 내역이 없습니다.")
         
         st.divider()
-        editable_headline("extractor_res_sec_opinion", "✍️ 결재 의견 (자동 생성)", level="h4", prefix="결재 의견 소제목")
+        st.write("#### ✍️ 결재 의견 (자동 생성)")
         st.code(generate_opinion(req_type, con_type, total_amt, item_list, raw_fin), language="text")
         
         st.divider()
         
         # 💡 [코드 단축] 데스크탑의 탐색기 기능이 불필요하여 깔끔하게 폴더 이름 텍스트 복사 뷰어만 남김
-        editable_headline("extractor_res_sec_vendor", "📁 업체 정보 통합 및 추천 폴더명", level="h4", prefix="업체 정보 소제목")
+        st.write("#### 📁 업체 정보 통합 및 추천 폴더명")
         
         c_e1, c_e2 = st.columns(2)
         with c_e1: t_dept = st.text_input("학과명", value=base_data['pi_dept'])
@@ -1833,7 +1844,11 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
         st.code(fold_nm, language="text")
 
         st.divider()
-        editable_headline("extractor_res_sec_bank", "🏦 통장사본 계좌정보", level="h4", prefix="통장 계좌정보 소제목")
+        bank_t = get_ui_text("ext_bank_title", "🏦 통장사본 계좌정보")
+        if is_live:
+            st.text_input("📍 [위치: 계좌 정보 소제목]", value=bank_t, key="live_ext_bank_title")
+        else:
+            st.write(f"#### {bank_t}")
         c_b1, c_b2 = st.columns(2)
         with c_b1:
             t_acc_holder = st.text_input("예금주 (수정 가능)", value=ai.get('예금주', '') if ai else '', key="req_acc_holder")
@@ -1890,17 +1905,34 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
 
 # ----------------- [2. 구매계약 분석 및 발주서 자동 생성] -----------------
 elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
-    render_top_header("headline_contract", "🤝 구매계약관리")
-    editable_headline("contract_desc", "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.", level="info", prefix="상단 안내 설명문")
+    con_main_t = get_ui_text("con_main_title", "🤝 구매계약관리")
+    render_top_header(con_main_t)
+    render_admin_edit_toolbar()
+    
+    is_live = st.session_state.get("ui_live_edit_mode", False) and st.session_state.get("is_admin_auth", False)
+    if is_live:
+        st.info("💡 **화면 문구 직접 수정 모드 ON**: 아래 각 위치의 텍스트 상자를 수정한 뒤 상단의 [💾 화면 문구 즉시 저장]을 누르면 바로 반영됩니다.")
+        st.text_input("📍 [위치: 최상단 대제목]", value=con_main_t, key="live_con_main_title")
+        
+    con_desc_t = get_ui_text("con_desc", "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.")
+    if is_live:
+        st.text_input("📍 [위치: 대제목 하단 안내 문구]", value=con_desc_t, key="live_con_desc")
+    else:
+        st.info(con_desc_t)
     
     if 'con_input_count' not in st.session_state:
         st.session_state['con_input_count'] = 2
+
+    con_card_pat = get_ui_text("con_card_title", "📄 [계약 {no}] 데이터 입력")
+    if is_live:
+        st.text_input("📍 [위치: 계약 카드 상단 제목] ({no}는 계약 번호로 자동 치환)", value=con_card_pat, key="live_con_card_title")
 
     raw_cons = []
     raw_memos = []
     for i in range(st.session_state['con_input_count']):
         with st.container(border=True):
-            st.markdown(f"##### 📄 [계약 {i+1}] 데이터 입력")
+            disp_card_t = con_card_pat.replace("{no}", str(i+1))
+            st.markdown(f"##### {disp_card_t}")
             c_txt1, c_txt2 = st.columns([3, 2])
             with c_txt1:
                 txt = st.text_area(f"{i+1}️⃣ 구매계약 화면 본문", height=100, key=f"raw_con_input_{i}", placeholder="rERP 구매계약 화면의 텍스트를 복사해 붙여넣으세요.")
@@ -1916,7 +1948,9 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
     st.markdown("<br>", unsafe_allow_html=True) 
 
     col_btn1, col_btn2 = st.columns(2)
-    btn_lbl = APP_CONFIG.get("btn_load_contract", "계약 데이터 불러오기")
+    btn_lbl = get_ui_text("btn_load_contract", "계약 데이터 불러오기")
+    if is_live:
+        st.text_input("📍 [위치: 계약 불러오기 버튼]", value=btn_lbl, key="live_btn_load_contract")
     with col_btn1: start_con = st.button(f"📋 {btn_lbl}", width="stretch", type="primary")
     with col_btn2: 
         if st.button("🔄 전체 초기화", width="stretch"): 
@@ -2007,7 +2041,7 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
                 default_u_ph = st.session_state.get(f"u_ph_{i}", sm_data.get('user_phone', ''))
                 default_u_em = st.session_state.get(f"u_em_{i}", sm_data.get('user_email', cd.get('email', '')))
 
-                editable_headline("contract_sec_user", "1) 실사용자 정보 (스마트 자동 추출)", level="caption", prefix="실사용자 섹션 소제목", key_suffix=f"{i}")
+                st.caption("1) 실사용자 정보 (스마트 자동 추출)")
                 c_u1, c_u2, c_u3 = st.columns(3)
                 with c_u1: u_nm = st.text_input("실사용자 성명", value=default_u_nm, key=f"u_nm_{i}")
                 with c_u2: u_ph = st.text_input("실사용자 연락처", value=default_u_ph, key=f"u_ph_{i}")
@@ -2018,13 +2052,13 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
                 # 💡 업체담당자 이메일은 실사용자 이메일(cd['email'])을 덮어쓰지 않고 부재 시 공란으로 둠
                 default_v_em = st.session_state.get(f"v_em_{i}", sm_data.get('vendor_email', ''))
 
-                editable_headline("contract_sec_vendor", "2) 협력사(업체) 담당자 정보 (이메일 미기재 시 직접 입력 가능)", level="caption", prefix="협력사 섹션 소제목", key_suffix=f"{i}")
+                st.caption("2) 협력사(업체) 담당자 정보 (이메일 미기재 시 직접 입력 가능)")
                 c_vr1, c_vr2, c_vr3 = st.columns(3)
                 with c_vr1: v_rep = st.text_input("업체담당자 성명", value=default_v_rep, key=f"v_rep_{i}")
                 with c_vr2: v_ph = st.text_input("업체담당자 연락처", value=default_v_ph, key=f"v_ph_{i}")
                 with c_vr3: v_em = st.text_input("업체담당자 이메일", value=default_v_em, key=f"v_em_{i}", placeholder="미기재 시 직접 입력")
 
-                editable_headline("contract_sec_staff", "3) 구매/검수 담당자 및 계약보증금", level="caption", prefix="구매/검수 담당자 섹션 소제목", key_suffix=f"{i}")
+                st.caption("3) 구매/검수 담당자 및 계약보증금")
                 c_b1, c_b2, c_b3 = st.columns(3)
                 with c_b1:
                     buyer_options = list(BUYER_STAFF.keys()) + ["직접입력"]
@@ -2064,7 +2098,17 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
                     if calc_deposit > 0:
                         st.caption(f"￦ {calc_deposit:,} (지급각서 반영)")
 
-                if st.button(f"📄 [{i+1}번] 워드파일 생성 준비", key=f"btn_gen_{i}"):
+                btn_gen_pat = get_ui_text("con_btn_gen", "📄 [{no}번] 워드파일 생성 준비")
+                btn_dl_pat = get_ui_text("con_btn_dl", "📥 [{no}번] 완성된 발주요청서 다운로드 (.docx)")
+                disp_gen_t = btn_gen_pat.replace("{no}", str(i+1))
+                disp_dl_t = btn_dl_pat.replace("{no}", str(i+1))
+                
+                if i == 0 and is_live:
+                    c_g1, c_g2 = st.columns(2)
+                    with c_g1: st.text_input("📍 [위치: 발주서 생성 준비 버튼] ({no}는 번호)", value=btn_gen_pat, key="live_con_btn_gen")
+                    with c_g2: st.text_input("📍 [위치: 완성본 다운로드 버튼] ({no}는 번호)", value=btn_dl_pat, key="live_con_btn_dl")
+
+                if st.button(disp_gen_t, key=f"btn_gen_{i}"):
                     if not e_name or amt_val <= 0 or not e_ven or not u_nm:
                         st.error("🚨 필수 정보(계약건명, 계약금액, 협력사, 실사용자 성명)를 모두 입력해주세요.")
                     else:
@@ -2106,7 +2150,7 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
 
                             st.success(f"✅ {i+1}번 발주서 생성 완료!")
                             st.download_button(
-                                label=f"📥 [{i+1}번] 완성된 발주요청서 다운로드 (.docx)",
+                                label=disp_dl_t,
                                 data=ts,
                                 file_name=f"발주요청서_{e_ven}_{e_name}.docx",
                                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -2117,7 +2161,7 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
 
 # ----------------- [3. 분석내용 불러오기] -----------------
 elif menu == "🕒 분석내용 불러오기":
-    render_top_header("headline_history", "🕒 과거 작업 내역 대시보드")
+    render_top_header("🕒 과거 작업 내역 대시보드")
     st.info("이전에 작업하고 저장해둔 분석 내역을 엑셀 대장처럼 확인하고, 언제든 다시 불러와서 이어서 작업할 수 있습니다.")
     
     cache_list = get_cache_list()
@@ -2244,7 +2288,7 @@ elif menu == "⚙️ 관리자 설정":
         st.error("🔒 관리자 전용 화면입니다. 우측 상단의 자물쇠(🔒) 아이콘을 클릭하여 PIN을 입력해주세요.")
         st.stop()
 
-    render_top_header("headline_admin", "⚙️ 관리자 설정")
+    render_top_header("⚙️ 관리자 설정")
     st.caption("시스템 명칭, 화면 헤드라인 문구 및 담당자 정보를 손쉽게 변경하고 관리할 수 있습니다.")
     
     # 세션에 임시 설정 버퍼가 없으면 현재 설정으로 로드
@@ -2253,84 +2297,110 @@ elif menu == "⚙️ 관리자 설정":
         
     admin_cfg = st.session_state["admin_cfg"]
     
-    tab_screens, tab_buyer, tab_inspector, tab_security = st.tabs([
-        "🖥️ 화면별 문구 설정 (위치별 미리보기)", 
+    tab_titles, tab_buyer, tab_inspector = st.tabs([
+        "📝 명칭 및 헤드라인", 
         "👥 구매계약 담당자 관리", 
-        "🔍 검수 담당자 관리",
-        "🔐 관리자 비밀번호(PIN) 변경"
+        "🔍 검수 담당자 관리"
     ])
     
-    with tab_screens:
-        st.markdown("### 🖥️ 화면 위치별 문구 수정")
-        st.info("💡 **화면에서 직접 수정하는 방법**: 우측 상단 자물쇠 옆의 **'✏️ 화면 문구 직접 수정 모드'**를 켜면, 실제 사용하시는 화면 속 각 제목/헤드라인 위치에서 바로 수정하실 수도 있습니다!")
+    with tab_titles:
+        st.markdown("#### ✏️ 화면별 시각적 레이아웃 & 문구 설정")
+        st.info("💡 **어느 위치인지 한눈에 확인하며 바꾸세요:** 각 화면의 실제 배치 순서대로 영역별로 묶어두었습니다. 원하시는 위치의 텍스트를 수정하고 맨 아래 [💾 설정 저장하기]를 누르시면 됩니다.\n\n*(더 편리하게는 실제 화면 상단에 있는 **'✏️ 화면 문구 직접 수정 모드'**를 켜서 그 자리에서 바로 고칠 수도 있습니다!)*")
         
-        scr_tab1, scr_tab2, scr_tab3 = st.tabs([
-            "📱 사이드바 메뉴",
-            "💰 1번 화면 (구매추출기)",
-            "🤝 2번 화면 (구매계약관리)"
+        sub_tab_ext, sub_tab_con, sub_tab_global = st.tabs([
+            "💰 1. 구매추출기 화면 레이아웃",
+            "🤝 2. 구매계약관리 화면 레이아웃",
+            "🌐 3. 전역 & 사이드바 & 보안"
         ])
         
-        with scr_tab1:
-            st.markdown("##### 📍 [사이드바 영역]")
+        with sub_tab_ext:
             with st.container(border=True):
-                st.caption("👈 화면 왼쪽 사이드바에 표시되는 명칭들입니다.")
-                admin_cfg["sidebar_title"] = st.text_input("1. 사이드바 상단 대제목/로고", value=admin_cfg.get("sidebar_title", "💼 구매 업무 보조"), key="cfg_side_title")
-                c_sb1, c_sb2 = st.columns(2)
-                with c_sb1:
-                    admin_cfg["menu_extractor"] = st.text_input("2. 1번 메뉴 라디오 버튼 명칭", value=admin_cfg.get("menu_extractor", "💰 구매추출기"), key="cfg_menu_ext")
-                with c_sb2:
-                    admin_cfg["menu_contract"] = st.text_input("3. 2번 메뉴 라디오 버튼 명칭", value=admin_cfg.get("menu_contract", "🤝 구매계약관리"), key="cfg_menu_con")
-                admin_cfg["sidebar_status"] = st.text_input("4. 사이드바 하단 가동 상태 문구", value=admin_cfg.get("sidebar_status", "✅ 구매 보조 툴 가동 중"), key="cfg_side_status")
-                admin_cfg["app_title"] = st.text_input("5. 웹 브라우저 탭 상단 타이틀", value=admin_cfg.get("app_title", "구매 업무 보조"), key="cfg_app_title")
-                
-        with scr_tab2:
-            st.markdown("##### 📍 [1번 화면: 구매추출기 실제 레이아웃 순서]")
-            with st.container(border=True):
-                st.markdown("###### 🚩 [상단 영역]")
-                admin_cfg["headline_extractor"] = st.text_input("1. 화면 최상단 메인 대제목", value=admin_cfg.get("headline_extractor", "💰 구매추출기"), key="cfg_head_ext")
+                st.markdown("##### 🖥️ [위치 1] 화면 최상단 영역")
+                t_ext = st.text_input("화면 대제목", value=admin_cfg.get("ext_main_title", "💰 구매추출기"), key="cfg_ext_main_title")
+                admin_cfg["ext_main_title"] = t_ext.strip() or "💰 구매추출기"
                 
             with st.container(border=True):
-                st.markdown("###### 📥 [1단계: 서류 및 정보 입력 구역]")
-                admin_cfg["extractor_step1"] = st.text_input("2. 1단계 전체 섹션 제목", value=admin_cfg.get("extractor_step1", "📥 서류 및 정보 입력"), key="cfg_ext_s1")
+                st.markdown("##### 📥 [위치 2] STEP 1 서류/텍스트 입력 카드 영역")
+                t_step1 = st.text_input("1단계 큰 섹션 제목", value=admin_cfg.get("ext_step1_title", "📥 정보 입력 및 서류 업로드"), key="cfg_ext_step1_title")
+                admin_cfg["ext_step1_title"] = t_step1.strip() or "📥 정보 입력 및 서류 업로드"
                 
-                c_ex1, c_ex2 = st.columns(2)
-                with c_ex1:
-                    st.caption("👈 좌측 입력 폼")
-                    admin_cfg["extractor_sec1"] = st.text_input("3. 기본 정보 선택 소제목", value=admin_cfg.get("extractor_sec1", "📂 1. 기본 정보 선택"), key="cfg_ext_sec1")
-                    admin_cfg["extractor_sec2"] = st.text_input("4. ERP 텍스트 복사 소제목", value=admin_cfg.get("extractor_sec2", "📝 2. ERP 텍스트 복사"), key="cfg_ext_sec2")
-                with c_ex2:
-                    st.caption("👉 우측 파일 첨부 폼")
-                    admin_cfg["extractor_sec3"] = st.text_input("5. 파일 직접 업로드 소제목", value=admin_cfg.get("extractor_sec3", "📎 3. 파일 직접 업로드"), key="cfg_ext_sec3")
+                c_s1, c_s2, c_s3 = st.columns(3)
+                with c_s1:
+                    t_sub1 = st.text_input("1. 기본 정보 선택 소제목", value=admin_cfg.get("ext_sub1_title", "📂 1. 기본 정보 선택"), key="cfg_ext_sub1_title")
+                    admin_cfg["ext_sub1_title"] = t_sub1.strip() or "📂 1. 기본 정보 선택"
+                with c_s2:
+                    t_sub2 = st.text_input("2. ERP 텍스트 복사 소제목", value=admin_cfg.get("ext_sub2_title", "📝 2. ERP 텍스트 복사"), key="cfg_ext_sub2_title")
+                    admin_cfg["ext_sub2_title"] = t_sub2.strip() or "📝 2. ERP 텍스트 복사"
+                with c_s3:
+                    t_sub3 = st.text_input("3. 첨부 서류 업로드 소제목", value=admin_cfg.get("ext_sub3_title", "📎 3. AI OCR"), key="cfg_ext_sub3_title")
+                    admin_cfg["ext_sub3_title"] = t_sub3.strip() or "📎 3. AI OCR"
                     
-                admin_cfg["extractor_btn_analyze"] = st.text_input("6. 분석 실행 버튼 문구", value=admin_cfg.get("extractor_btn_analyze", "🚀 전체 데이터 통합 분석 시작"), key="cfg_ext_btn")
+                t_btn_ana = st.text_input("분석 시작 버튼 문구", value=admin_cfg.get("ext_btn_analyze", "🚀 전체 데이터 통합 분석 시작"), key="cfg_ext_btn_analyze")
+                admin_cfg["ext_btn_analyze"] = t_btn_ana.strip() or "🚀 전체 데이터 통합 분석 시작"
                 
             with st.container(border=True):
-                st.markdown("###### 📤 [2단계: 분석 결과 구역]")
-                admin_cfg["extractor_step2"] = st.text_input("7. 결과 섹션 제목", value=admin_cfg.get("extractor_step2", "📤 데이터 분석 및 검증 결과"), key="cfg_ext_s2")
+                st.markdown("##### 📤 [위치 3] STEP 2 분석 결과 확인 영역")
+                t_step2 = st.text_input("2단계 큰 섹션 제목", value=admin_cfg.get("ext_step2_title", "📤 [STEP 2] 분석 결과"), key="cfg_ext_step2_title")
+                admin_cfg["ext_step2_title"] = t_step2.strip() or "📤 [STEP 2] 분석 결과"
                 
-                c_res1, c_res2 = st.columns(2)
-                with c_res1:
-                    admin_cfg["extractor_res_sec_erp"] = st.text_input("8. ERP 기본정보 소제목", value=admin_cfg.get("extractor_res_sec_erp", "📝 ERP 기본 정보"), key="cfg_ext_r_erp")
-                    admin_cfg["extractor_res_sec_item"] = st.text_input("9. ERP 품목내역 소제목", value=admin_cfg.get("extractor_res_sec_item", "📦 ERP 품목 내역"), key="cfg_ext_r_itm")
-                    admin_cfg["extractor_res_sec_opinion"] = st.text_input("10. 결재의견 소제목", value=admin_cfg.get("extractor_res_sec_opinion", "✍️ 결재 의견 (자동 생성)"), key="cfg_ext_r_opn")
-                with c_res2:
-                    admin_cfg["extractor_res_sec_vendor"] = st.text_input("11. 업체정보/폴더 소제목", value=admin_cfg.get("extractor_res_sec_vendor", "📁 업체 정보 통합 및 추천 폴더명"), key="cfg_ext_r_ven")
-                    admin_cfg["extractor_res_sec_bank"] = st.text_input("12. 계좌정보 소제목", value=admin_cfg.get("extractor_res_sec_bank", "🏦 통장사본 계좌정보"), key="cfg_ext_r_bnk")
-                
-        with scr_tab3:
-            st.markdown("##### 📍 [2번 화면: 구매계약관리 실제 레이아웃 순서]")
-            with st.container(border=True):
-                st.markdown("###### 🚩 [상단 영역]")
-                admin_cfg["headline_contract"] = st.text_input("1. 화면 최상단 메인 대제목", value=admin_cfg.get("headline_contract", "🤝 구매계약관리"), key="cfg_head_con")
-                admin_cfg["contract_desc"] = st.text_area("2. 화면 상단 안내 설명문", value=admin_cfg.get("contract_desc", "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다."), key="cfg_con_desc", height=70)
-                admin_cfg["btn_load_contract"] = st.text_input("3. 계약 데이터 불러오기 버튼 문구", value=admin_cfg.get("btn_load_contract", "계약 데이터 불러오기"), key="cfg_con_btn")
-                
-            with st.container(border=True):
-                st.markdown("###### 📄 [계약 상세 폼 내부 섹션]")
-                admin_cfg["contract_sec_user"] = st.text_input("4. 실사용자 정보 소제목", value=admin_cfg.get("contract_sec_user", "1) 실사용자 정보 (스마트 자동 추출)"), key="cfg_con_sec_u")
-                admin_cfg["contract_sec_vendor"] = st.text_input("5. 협력사(업체) 정보 소제목", value=admin_cfg.get("contract_sec_vendor", "2) 협력사(업체) 담당자 정보 (이메일 미기재 시 직접 입력 가능)"), key="cfg_con_sec_v")
-                admin_cfg["contract_sec_staff"] = st.text_input("6. 구매/검수 담당자 정보 소제목", value=admin_cfg.get("contract_sec_staff", "3) 구매/검수 담당자 및 계약보증금"), key="cfg_con_sec_s")
+                c_r1, c_r2, c_r3 = st.columns(3)
+                with c_r1:
+                    t_ebas = st.text_input("ERP 기본 정보 소제목", value=admin_cfg.get("ext_erp_basic_title", "📝 ERP 기본 정보"), key="cfg_ext_erp_basic_title")
+                    admin_cfg["ext_erp_basic_title"] = t_ebas.strip() or "📝 ERP 기본 정보"
+                with c_r2:
+                    t_eitm = st.text_input("ERP 품목 내역 소제목", value=admin_cfg.get("ext_erp_items_title", "📦 ERP 품목 내역"), key="cfg_ext_erp_items_title")
+                    admin_cfg["ext_erp_items_title"] = t_eitm.strip() or "📦 ERP 품목 내역"
+                with c_r3:
+                    t_ebank = st.text_input("통장사본 계좌정보 소제목", value=admin_cfg.get("ext_bank_title", "🏦 통장사본 계좌정보"), key="cfg_ext_bank_title")
+                    admin_cfg["ext_bank_title"] = t_ebank.strip() or "🏦 통장사본 계좌정보"
 
+        with sub_tab_con:
+            with st.container(border=True):
+                st.markdown("##### 🖥️ [위치 1] 화면 최상단 영역")
+                t_con = st.text_input("화면 대제목", value=admin_cfg.get("con_main_title", "🤝 구매계약관리"), key="cfg_con_main_title")
+                t_cdesc = st.text_input("대제목 아래 안내 문구", value=admin_cfg.get("con_desc", "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다."), key="cfg_con_desc")
+                admin_cfg["con_main_title"] = t_con.strip() or "🤝 구매계약관리"
+                admin_cfg["con_desc"] = t_cdesc.strip() or "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다."
+                
+            with st.container(border=True):
+                st.markdown("##### 📄 [위치 2] 계약 입력 카드 & 불러오기 버튼")
+                t_ccard = st.text_input("계약 카드 상단 제목 ({no}는 계약 번호로 자동 치환)", value=admin_cfg.get("con_card_title", "📄 [계약 {no}] 데이터 입력"), key="cfg_con_card_title")
+                t_btn = st.text_input("계약 데이터 불러오기 버튼 문구", value=admin_cfg.get("btn_load_contract", "계약 데이터 불러오기"), key="cfg_btn_title")
+                admin_cfg["con_card_title"] = t_ccard.strip() or "📄 [계약 {no}] 데이터 입력"
+                admin_cfg["btn_load_contract"] = t_btn.strip() or "계약 데이터 불러오기"
+                
+            with st.container(border=True):
+                st.markdown("##### 📥 [위치 3] 발주서 생성 & 다운로드 버튼")
+                c_bgen, c_bdl = st.columns(2)
+                with c_bgen:
+                    t_bgen = st.text_input("워드파일 생성 버튼 문구 ({no}는 번호)", value=admin_cfg.get("con_btn_gen", "📄 [{no}번] 워드파일 생성 준비"), key="cfg_con_btn_gen")
+                    admin_cfg["con_btn_gen"] = t_bgen.strip() or "📄 [{no}번] 워드파일 생성 준비"
+                with c_bdl:
+                    t_bdl = st.text_input("워드파일 다운로드 버튼 문구 ({no}는 번호)", value=admin_cfg.get("con_btn_dl", "📥 [{no}번] 완성된 발주요청서 다운로드 (.docx)"), key="cfg_con_btn_dl")
+                    admin_cfg["con_btn_dl"] = t_bdl.strip() or "📥 [{no}번] 완성된 발주요청서 다운로드 (.docx)"
+
+        with sub_tab_global:
+            with st.container(border=True):
+                st.markdown("##### 🌐 브라우저 및 사이드바 설정")
+                t_app = st.text_input("브라우저 탭 제목", value=admin_cfg.get("app_title", "구매 업무 보조"), key="cfg_app_title")
+                t_side = st.text_input("사이드바 상단 제목", value=admin_cfg.get("sidebar_title", "💼 구매 업무 보조"), key="cfg_side_title")
+                c_m1, c_m2 = st.columns(2)
+                with c_m1:
+                    t_mext = st.text_input("사이드바 1번 메뉴명", value=admin_cfg.get("menu_extractor", "💰 구매추출기"), key="cfg_menu_extractor")
+                with c_m2:
+                    t_mcon = st.text_input("사이드바 2번 메뉴명", value=admin_cfg.get("menu_contract", "🤝 구매계약관리"), key="cfg_menu_contract")
+                    
+                admin_cfg["app_title"] = t_app.strip() or "구매 업무 보조"
+                admin_cfg["sidebar_title"] = t_side.strip() or "💼 구매 업무 보조"
+                admin_cfg["menu_extractor"] = t_mext.strip() or "💰 구매추출기"
+                admin_cfg["menu_contract"] = t_mcon.strip() or "🤝 구매계약관리"
+                
+            with st.container(border=True):
+                st.markdown("##### 🔐 관리자 PIN 번호 변경")
+                st.caption("우측 상단 자물쇠(🔒) 클릭 시 입력하는 관리자 비밀번호입니다. (기본값: 1234)")
+                t_pin = st.text_input("새 관리자 PIN", value=str(admin_cfg.get("admin_pin", "1234")), key="cfg_admin_pin", type="password")
+                admin_cfg["admin_pin"] = t_pin.strip() or "1234"
+        
     with tab_buyer:
         st.markdown("#### 👥 구매계약 담당자 목록")
         st.caption("발주서 작성 시 드롭다운 목록에 자동 표시되는 담당자 명단입니다.")
@@ -2395,12 +2465,6 @@ elif menu == "⚙️ 관리자 설정":
         insp["phone"] = i_phone.strip()
         insp["email"] = i_email.strip()
         
-    with tab_security:
-        st.markdown("#### 🔐 관리자 PIN 번호 변경")
-        st.caption("우측 상단 자물쇠(🔒) 클릭 시 입력하는 관리자 비밀번호입니다.")
-        t_pin = st.text_input("새 관리자 PIN", value=str(admin_cfg.get("admin_pin", "1234")), key="cfg_admin_pin", type="password")
-        admin_cfg["admin_pin"] = t_pin.strip() or "1234"
-        
     st.divider()
     c_btn1, c_btn2, c_btn3 = st.columns([1, 1, 1])
     with c_btn1:
@@ -2422,6 +2486,5 @@ elif menu == "⚙️ 관리자 설정":
     with c_btn3:
         if st.button("🔒 관리자 로그아웃 (숨김)", type="secondary", use_container_width=True):
             st.session_state["is_admin_auth"] = False
-            st.session_state["ui_edit_mode"] = False
-            st.session_state["nav_target"] = APP_CONFIG.get("menu_extractor", "💰 구매추출기")
+            st.session_state["nav_target"] = "💰 구매추출기"
             st.rerun()
