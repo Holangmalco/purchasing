@@ -997,9 +997,8 @@ def extract_contract_info(text):
 
 def parse_smart_contact_memo(text):
     """
-    노션 비고란 등에서 복사한 실사용자/업체담당자 비정형 텍스트를 정밀 분리합니다.
-    (예: 실사용자: 정영권 교수 01033246327 ykjung@sejong.ac.kr
-         업체담당자 / 김철수 / 010-9999-8888)
+    노션 비고란, rERP 복사문 등에서 실사용자와 업체(협력사) 담당자 정보를 정밀하게 추출합니다.
+    줄바꿈(엔터), 슬래시(/), 직급(과장/부장/대리/연구원/교수 등), 이메일 분리 등 다양한 형태를 완벽 지원합니다.
     """
     result = {
         'user_name': '', 'user_phone': '', 'user_email': '',
@@ -1011,88 +1010,130 @@ def parse_smart_contact_memo(text):
     phone_pattern = r'(01[016789]-?\d{3,4}-?\d{4}|02-?\d{3,4}-?\d{4}|\b\d{4}\b)'
     email_pattern = r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
 
-    normalized_text = text
-    # 만약 엔터 없이 한 줄에 실사용자와 업체담당자가 함께 입력된 경우 분리
-    vendor_split_match = re.search(r'[\r\n\s/]+(?=(?:업체담당자|업체|협력사|거래처|vendor|공급사)[\s:：/\-])', normalized_text, flags=re.IGNORECASE)
-    if vendor_split_match and ('실사용자' in normalized_text or '사용자' in normalized_text):
-        split_pos = vendor_split_match.start()
-        user_part = normalized_text[:split_pos]
-        vendor_part = normalized_text[split_pos:]
-        lines = [user_part.strip(), vendor_part.strip()]
-    else:
-        lines = [line.strip() for line in normalized_text.strip().split('\n') if line.strip()]
+    def format_phone(raw_ph):
+        dig = re.sub(r'[^\d]', '', raw_ph)
+        if len(dig) == 11 and dig.startswith('01'):
+            return f'{dig[:3]}-{dig[3:7]}-{dig[7:]}'
+        elif len(dig) == 10 and dig.startswith('01'):
+            return f'{dig[:3]}-{dig[3:6]}-{dig[6:]}'
+        elif len(dig) == 10 and dig.startswith('02'):
+            return f'{dig[:2]}-{dig[2:6]}-{dig[6:]}'
+        elif len(dig) == 9 and dig.startswith('02'):
+            return f'{dig[:2]}-{dig[2:5]}-{dig[5:]}'
+        elif len(dig) == 4:
+            return f'02-3408-{dig}'
+        return raw_ph
 
-    def extract_from_line(line, prefix_patterns):
+    def extract_chunk_info(chunk):
         em = ''
-        em_m = re.search(email_pattern, line)
+        em_m = re.search(email_pattern, chunk)
         if em_m:
             em = em_m.group(1).strip()
-            line = line.replace(em, ' ')
-        
+            chunk = chunk.replace(em, ' ')
+
         ph = ''
-        ph_m = re.search(phone_pattern, line)
+        ph_m = re.search(phone_pattern, chunk)
         if ph_m:
             raw_ph = ph_m.group(1).strip()
-            digits = re.sub(r'[^\d]', '', raw_ph)
-            if len(digits) == 11 and digits.startswith('01'):
-                ph = f'{digits[:3]}-{digits[3:7]}-{digits[7:]}'
-            elif len(digits) == 10 and digits.startswith('01'):
-                ph = f'{digits[:3]}-{digits[3:6]}-{digits[6:]}'
-            elif len(digits) == 10 and digits.startswith('02'):
-                ph = f'{digits[:2]}-{digits[2:6]}-{digits[6:]}'
-            elif len(digits) == 9 and digits.startswith('02'):
-                ph = f'{digits[:2]}-{digits[2:5]}-{digits[5:]}'
-            elif len(digits) == 4:
-                ph = f'02-3408-{digits}'
-            else:
-                ph = raw_ph
-            line = line.replace(raw_ph, ' ')
+            ph = format_phone(raw_ph)
+            chunk = chunk.replace(raw_ph, ' ')
+
+        prefix = r'^(실사용자|사용자|업체담당자|업체\s*담당자|협력사\s*담당자|협력사|거래처|vendor|공급사|담당자|신청자|성명|이름)[\s:：/\-]*'
         
-        clean = line.strip()
-        clean = re.sub(r'^[^\w가-힣]+', '', clean).strip()
-        clean = re.sub(prefix_patterns, '', clean, flags=re.IGNORECASE).strip()
-        clean = re.sub(r'^[^\w가-힣]+', '', clean).strip()
-        clean = re.sub(r'[\(\)\[\]/,:：]', ' ', clean).strip()
-        clean = re.sub(r'\s+', ' ', clean).strip()
-        return clean, ph, em
+        lines = [l.strip() for l in chunk.split('\n') if l.strip()]
+        cleaned_words = []
+        for l in lines:
+            l = re.sub(prefix, '', l, flags=re.IGNORECASE).strip()
+            l = re.sub(r'[\(\)\[\]/,:：]', ' ', l).strip()
+            l = re.sub(r'\s+', ' ', l).strip()
+            if l:
+                cleaned_words.append(l)
 
-    user_prefix = r'^(실사용자|사용자|담당교수|교수|연구원|신청자|성명|이름)[\s:：/\-]*'
-    vendor_prefix = r'^(업체담당자|업체|협력사|거래처|vendor|공급사|담당자|성명|이름)[\s:：/\-]*'
+        name = ' '.join(cleaned_words).strip()
+        name = re.sub(r'^(실사용자|사용자|업체담당자|협력사|업체)[\s:：/\-]*', '', name).strip()
+        return name, ph, em
 
-    for idx, line in enumerate(lines):
-        # 결재선(기안자/과장/부장 등) 및 rERP 시스템 헤더/칼럼 행은 메모 분석 대상에서 제외
-        if any(kw in line for kw in [
-            '과장', '부장', '단장', '결재', '구매계약서', '상세보기', '재원정보', 
-            '심의정보', '첨부문서', '물품내역', '연구책임자정보', '과제정보', '사업장', 
-            '구매요구번호', '진행상태', '보완사항', '구매진행상세', '계약사유', '계약업체명', 
-            '계약건명', '계약금액'
-        ]):
-            continue
+    # 1. 명시적 키워드(실사용자 / 업체담당자) 기준 분할
+    u_match = re.search(r'(?:^|[\r\n\s/])(?P<kw>실사용자|사용자|담당교수)[\s:：/\-]*', text)
+    v_match = re.search(r'(?:^|[\r\n\s/])(?P<kw>업체담당자|협력사담당자|업체\s*담당자|거래처담당자|업체|협력사|거래처|vendor|공급사)[\s:：/\-]*', text, flags=re.IGNORECASE)
 
-        is_vendor = any(kw in line for kw in ['업체담당자', '업체', '협력사', '거래처', 'vendor', '공급사'])
-        is_user = any(kw in line for kw in ['실사용자', '사용자', '담당교수', '교수', '연구원', '신청자'])
-
-        target = None
-        if is_vendor:
-            target = 'vendor'
-        elif is_user:
-            target = 'user'
-        elif len(lines) <= 2:
-            target = 'user' if idx == 0 else 'vendor'
+    if u_match and v_match:
+        if u_match.start() < v_match.start():
+            u_chunk = text[u_match.start():v_match.start()]
+            v_chunk = text[v_match.start():]
         else:
-            continue
+            v_chunk = text[v_match.start():u_match.start()]
+            u_chunk = text[u_match.start():]
+            
+        erp_end = re.search(r'[\r\n]\s*(?:상세보기|기안자|사업장|회계단위|지원사업|계약업체정보|물품내역|첨부문서|심의정보|재원정보)', v_chunk)
+        if erp_end:
+            v_chunk = v_chunk[:erp_end.start()]
 
-        if target == 'user':
-            nm, ph, em = extract_from_line(line, user_prefix)
-            if nm and not result['user_name']: result['user_name'] = nm
-            if ph and not result['user_phone']: result['user_phone'] = ph
-            if em and not result['user_email']: result['user_email'] = em
+        u_nm, u_ph, u_em = extract_chunk_info(u_chunk)
+        v_nm, v_ph, v_em = extract_chunk_info(v_chunk)
+        result['user_name'] = u_nm
+        result['user_phone'] = u_ph
+        result['user_email'] = u_em
+        result['vendor_rep'] = v_nm
+        result['vendor_phone'] = v_ph
+        result['vendor_email'] = v_em
+        return result
+
+    elif u_match and not v_match:
+        u_chunk = text[u_match.start():]
+        erp_end = re.search(r'[\r\n]\s*(?:상세보기|기안자|사업장|회계단위|지원사업|계약업체정보|물품내역|첨부문서|심의정보|재원정보)', u_chunk)
+        if erp_end:
+            u_chunk = u_chunk[:erp_end.start()]
+        u_nm, u_ph, u_em = extract_chunk_info(u_chunk)
+        result['user_name'] = u_nm
+        result['user_phone'] = u_ph
+        result['user_email'] = u_em
+        return result
+
+    elif v_match and not u_match:
+        v_chunk = text[v_match.start():]
+        erp_end = re.search(r'[\r\n]\s*(?:상세보기|기안자|사업장|회계단위|지원사업|계약업체정보|물품내역|첨부문서|심의정보|재원정보)', v_chunk)
+        if erp_end:
+            v_chunk = v_chunk[:erp_end.start()]
+        v_nm, v_ph, v_em = extract_chunk_info(v_chunk)
+        result['vendor_rep'] = v_nm
+        result['vendor_phone'] = v_ph
+        result['vendor_email'] = v_em
+        return result
+
+    # 2. 키워드가 없는 경우: 줄바꿈 및 전화번호 패턴 기준 청크 분할
+    raw_lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
+    clean_lines = [
+        l for l in raw_lines 
+        if not re.search(r'기안자\s+담당\s+과장|사업장/회계단위|지원사업\s+교내|상세보기|구매계약서', l)
+    ]
+    
+    chunks = []
+    current_chunk = []
+    for line in clean_lines:
+        has_phone = bool(re.search(phone_pattern, line))
+        if has_phone and current_chunk and any(re.search(phone_pattern, c) for c in current_chunk):
+            chunks.append('\n'.join(current_chunk))
+            current_chunk = [line]
         else:
-            nm, ph, em = extract_from_line(line, vendor_prefix)
-            if nm and not result['vendor_rep']: result['vendor_rep'] = nm
-            if ph and not result['vendor_phone']: result['vendor_phone'] = ph
-            # 업체담당자 라인에 이메일이 없는 경우 공란 유지 (실사용자 이메일 침범 방지)
-            if em and not result['vendor_email']: result['vendor_email'] = em
+            current_chunk.append(line)
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+
+    if len(chunks) == 2:
+        u_nm, u_ph, u_em = extract_chunk_info(chunks[0])
+        v_nm, v_ph, v_em = extract_chunk_info(chunks[1])
+        result['user_name'] = u_nm
+        result['user_phone'] = u_ph
+        result['user_email'] = u_em
+        result['vendor_rep'] = v_nm
+        result['vendor_phone'] = v_ph
+        result['vendor_email'] = v_em
+    elif len(chunks) == 1:
+        u_nm, u_ph, u_em = extract_chunk_info(chunks[0])
+        result['user_name'] = u_nm
+        result['user_phone'] = u_ph
+        result['user_email'] = u_em
 
     return result
 
