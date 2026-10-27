@@ -55,8 +55,57 @@ SESSION_AI_KEY = "ai_res"
 SESSION_REQ_KEY = "req_analysis_done"
 REQUIRED_FILES = ["template_under10mil.docx", "template_over10mil.docx"]
 
+def get_config_path():
+    p1 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app_config.json")
+    if os.path.exists(p1): return p1
+    p2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_config.json")
+    if os.path.exists(p2): return p2
+    if os.path.exists("app_config.json"): return os.path.abspath("app_config.json")
+    return p1
+
+DEFAULT_APP_CONFIG = {
+    "app_title": "구매 업무 보조",
+    "sidebar_title": "💼 구매 업무 보조",
+    "headline_extractor": "구매추출기",
+    "headline_contract": "구매계약관리",
+    "btn_load_contract": "계약 데이터 불러오기",
+    "buyer_staff": {
+        "권순철 사원": {"name": "권순철", "phone": "02-6935-2624", "email": "hagrid0924@sejong.ac.kr"},
+        "김민석 사원": {"name": "김민석", "phone": "02-3408-3032", "email": "sejongtwice@sejong.ac.kr"}
+    },
+    "inspector_info": {
+        "name": "경제용",
+        "phone": "02-3408-4058",
+        "email": "rudwpdyd@sejong.ac.kr"
+    }
+}
+
+def load_app_config():
+    c_path = get_config_path()
+    if os.path.exists(c_path):
+        try:
+            with open(c_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                merged = DEFAULT_APP_CONFIG.copy()
+                merged.update(data)
+                return merged
+        except Exception:
+            pass
+    return DEFAULT_APP_CONFIG.copy()
+
+def save_app_config(new_cfg):
+    c_path = get_config_path()
+    try:
+        with open(c_path, "w", encoding="utf-8") as f:
+            json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+APP_CONFIG = load_app_config()
+
 try:
-    st.set_page_config(page_title="구매부서 통합시스템", page_icon="🏫", layout="wide")
+    st.set_page_config(page_title=APP_CONFIG.get("app_title", "구매 업무 보조"), page_icon="💼", layout="wide")
 except Exception:
     pass
 
@@ -120,11 +169,8 @@ if missing_keys:
 
 ai_client = genai.Client(api_key=API_KEY)
 
-INSPECTOR_INFO = {
-    "name": "경제용",
-    "phone": "02-3408-3031",
-    "email": "rudwpdyd@sejong.ac.kr"
-}
+INSPECTOR_INFO = APP_CONFIG.get("inspector_info", DEFAULT_APP_CONFIG["inspector_info"])
+BUYER_STAFF = APP_CONFIG.get("buyer_staff", DEFAULT_APP_CONFIG["buyer_staff"])
 
 # ==========================================
 # 2. 공통 유틸리티
@@ -218,13 +264,10 @@ def handle_error(err_type, msg, e=None):
         st.error(f"❗ **[시스템 오류]** {msg}")
 
 USER_DB = load_user_db()
-BUYER_STAFF = {
-    "권순철 사원": {"name": "권순철", "phone": "02-6935-2624", "email": "hagrid0924@sejong.ac.kr"},
-    "김민석 사원": {"name": "김민석", "phone": "02-3408-3032", "email": "sejongtwice@sejong.ac.kr"}
-}
 for _bk, _bv in BUYER_STAFF.items():
-    USER_DB[_bk] = {"phone": _bv["phone"], "email": _bv["email"]}
-    USER_DB[_bk.split()[0]] = {"phone": _bv["phone"], "email": _bv["email"]}
+    USER_DB[_bk] = {"phone": _bv.get("phone", ""), "email": _bv.get("email", "")}
+    b_first = _bk.split()[0]
+    USER_DB[b_first] = {"phone": _bv.get("phone", ""), "email": _bv.get("email", "")}
 CACHE_FILE = "local_cache.json"
 GSHEETS_URL = get_secret("GSHEETS_URL") or "https://script.google.com/macros/s/AKfycbx3qKiOuC7t0J5g7ZJWWccXzQTld728WRPqbcyf7jBD9VHFZNYv0XhqqGug--imgH6U/exec"
 
@@ -1010,10 +1053,11 @@ def parse_smart_contact_memo(text):
 # 5. 화면 UI 구성
 # ==========================================
 with st.sidebar:
-    st.markdown("## 🏫 구매부서 통합시스템")
+    s_title = APP_CONFIG.get("sidebar_title", "💼 구매 업무 보조")
+    st.markdown(f"## {s_title}")
     menu = st.radio(
         "메뉴 선택", 
-        ["💰 구매추출기", "🤝 구매계약관리"], 
+        ["💰 구매추출기", "🤝 구매계약관리", "⚙️ 관리자 설정"], 
         key="main_menu"
     )
     st.divider()
@@ -1023,11 +1067,11 @@ with st.sidebar:
         if st.checkbox("보관함 대시보드 열기", key="open_history_db"):
             menu = "🕒 분석내용 불러오기"
             
-    st.caption("✅ 시스템 정상 가동 중")
+    st.caption("✅ 구매 보조 툴 가동 중")
 
 # ----------------- [1. 구매요청 분석] -----------------
 if menu in ["💰 구매추출기", "📋 구매요청 분석"]:
-    st.title("💰 구매추출기 (구매요청서 분석)")
+    st.title(f"💰 {APP_CONFIG.get('headline_extractor', '구매추출기')}")
     
     def on_critical_condition_change():
         if SESSION_REQ_KEY in st.session_state:
@@ -1036,9 +1080,9 @@ if menu in ["💰 구매추출기", "📋 구매요청 분석"]:
         st.session_state['ai_errors'] = []
         st.session_state['is_saved'] = False
     
-    st.write("### 📥 [STEP 1] 정보 입력 및 서류 업로드")
+    st.write("### 📥 정보 입력 및 서류 업로드")
     
-    st.markdown("#### 📂 1. 구매/계약 기본 정보 선택")
+    st.markdown("#### 📂 1. 기본 정보 선택")
     c_type1, c_type2 = st.columns(2)
 
     with c_type1:
@@ -1689,7 +1733,7 @@ if menu in ["💰 구매추출기", "📋 구매요청 분석"]:
 
 # ----------------- [2. 구매계약 분석 및 발주서 자동 생성] -----------------
 elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
-    st.title("🤝 구매계약관리 (발주서 자동 생성)")
+    st.title(f"🤝 {APP_CONFIG.get('headline_contract', '구매계약관리')}")
     st.info("여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.")
     
     if 'con_input_count' not in st.session_state:
@@ -1715,7 +1759,8 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
     st.markdown("<br>", unsafe_allow_html=True) 
 
     col_btn1, col_btn2 = st.columns(2)
-    with col_btn1: start_con = st.button("🚀 다중 데이터 분석 및 폼 렌더링", width="stretch", type="primary")
+    btn_lbl = APP_CONFIG.get("btn_load_contract", "계약 데이터 불러오기")
+    with col_btn1: start_con = st.button(f"📋 {btn_lbl}", width="stretch", type="primary")
     with col_btn2: 
         if st.button("🔄 전체 초기화", width="stretch"): 
             st.session_state.pop('multi_con_data', None)
@@ -1825,13 +1870,15 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
                 st.caption("3) 구매/검수 담당자 및 계약보증금")
                 c_b1, c_b2, c_b3 = st.columns(3)
                 with c_b1:
-                    buyer_options = ["권순철 사원", "김민석 사원", "직접입력"]
+                    buyer_options = list(BUYER_STAFF.keys()) + ["직접입력"]
                     extracted_buyer = cd.get('buyer_name', '')
                     default_b_idx = 0
-                    if "김민석" in extracted_buyer:
-                        default_b_idx = 1
-                    elif "권순철" in extracted_buyer:
-                        default_b_idx = 0
+                    for b_idx, b_opt in enumerate(buyer_options):
+                        if b_opt != "직접입력":
+                            b_st_name = BUYER_STAFF[b_opt].get("name", "")
+                            if b_st_name and b_st_name in extracted_buyer:
+                                default_b_idx = b_idx
+                                break
 
                     sel_buyer = st.selectbox("구매계약 담당자", buyer_options, index=default_b_idx, key=f"b_sel_{i}")
                     if sel_buyer == "직접입력":
@@ -1839,15 +1886,16 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
                         b_ph = st.text_input("구매담당자 연락처", value="", key=f"b_ph_custom_{i}")
                         b_em = st.text_input("구매담당자 이메일", value="", key=f"b_em_custom_{i}")
                     else:
-                        staff_info = BUYER_STAFF[sel_buyer]
-                        b_nm = staff_info["name"]
-                        b_ph = staff_info["phone"]
-                        b_em = staff_info["email"]
+                        staff_info = BUYER_STAFF.get(sel_buyer, {})
+                        b_nm = staff_info.get("name", "")
+                        b_ph = staff_info.get("phone", "")
+                        b_em = staff_info.get("email", "")
                         st.caption(f"📞 {b_ph} | ✉️ {b_em}")
 
                 with c_b2:
-                    i_nm = st.text_input("검수담당자", value="경제용", key=f"i_nm_{i}")
-                    st.caption("📞 02-3408-4058 | ✉️ rudwpdyd@sejong.ac.kr")
+                    insp_name_default = INSPECTOR_INFO.get("name", "경제용")
+                    i_nm = st.text_input("검수담당자", value=insp_name_default, key=f"i_nm_{i}")
+                    st.caption(f"📞 {INSPECTOR_INFO.get('phone', '02-3408-4058')} | ✉️ {INSPECTOR_INFO.get('email', 'rudwpdyd@sejong.ac.kr')}")
                 
                 amt_val = safe_int(e_amt)
                 with c_b3:
@@ -1890,8 +1938,8 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
                                 "실사용자_메일": u_em,
                                 "협력사": e_ven,
                                 "검수담당자": i_nm, 
-                                "검수담당자_연락처": "02-3408-4058", 
-                                "검수담당자_메일": "rudwpdyd@sejong.ac.kr",
+                                "검수담당자_연락처": INSPECTOR_INFO.get("phone", "02-3408-4058"), 
+                                "검수담당자_메일": INSPECTOR_INFO.get("email", "rudwpdyd@sejong.ac.kr"),
                                 "계약보증금액": final_deposit_str
                             }
                             doc.render(context)
@@ -2032,3 +2080,119 @@ elif menu == "🕒 분석내용 불러오기":
         if "load_msg" in st.session_state:
             st.error(st.session_state["load_msg"])
             del st.session_state["load_msg"]
+
+# ----------------- [4. 관리자 설정 화면] -----------------
+elif menu == "⚙️ 관리자 설정":
+    st.title("⚙️ 관리자 설정")
+    st.caption("시스템 명칭, 화면 헤드라인 문구 및 담당자 정보를 손쉽게 변경하고 관리할 수 있습니다.")
+    
+    # 세션에 임시 설정 버퍼가 없으면 현재 설정으로 로드
+    if "admin_cfg" not in st.session_state:
+        st.session_state["admin_cfg"] = json.loads(json.dumps(APP_CONFIG))
+        
+    admin_cfg = st.session_state["admin_cfg"]
+    
+    tab_titles, tab_buyer, tab_inspector = st.tabs([
+        "📝 명칭 및 헤드라인", 
+        "👥 구매계약 담당자 관리", 
+        "🔍 검수 담당자 관리"
+    ])
+    
+    with tab_titles:
+        st.markdown("#### ✏️ 시스템 명칭 & 헤드라인 문구 수정")
+        st.caption("무겁거나 거창한 표현 대신 원하는 깔끔하고 마일드한 명칭으로 수정하세요.")
+        
+        t_app = st.text_input("1. 브라우저 탭 제목", value=admin_cfg.get("app_title", "구매 업무 보조"), key="cfg_app_title")
+        t_side = st.text_input("2. 사이드바 상단 제목", value=admin_cfg.get("sidebar_title", "💼 구매 업무 보조"), key="cfg_side_title")
+        t_ext = st.text_input("3. 1번 화면(구매추출기) 제목", value=admin_cfg.get("headline_extractor", "구매추출기"), key="cfg_ext_title")
+        t_con = st.text_input("4. 2번 화면(구매계약관리) 제목", value=admin_cfg.get("headline_contract", "구매계약관리"), key="cfg_con_title")
+        t_btn = st.text_input("5. 계약 데이터 불러오기 버튼 문구", value=admin_cfg.get("btn_load_contract", "계약 데이터 불러오기"), key="cfg_btn_title")
+        
+        admin_cfg["app_title"] = t_app.strip() or "구매 업무 보조"
+        admin_cfg["sidebar_title"] = t_side.strip() or "💼 구매 업무 보조"
+        admin_cfg["headline_extractor"] = t_ext.strip() or "구매추출기"
+        admin_cfg["headline_contract"] = t_con.strip() or "구매계약관리"
+        admin_cfg["btn_load_contract"] = t_btn.strip() or "계약 데이터 불러오기"
+        
+    with tab_buyer:
+        st.markdown("#### 👥 구매계약 담당자 목록")
+        st.caption("발주서 작성 시 드롭다운 목록에 자동 표시되는 담당자 명단입니다.")
+        
+        current_buyers = admin_cfg.get("buyer_staff", {})
+        
+        staff_keys_to_delete = []
+        for b_key, b_info in list(current_buyers.items()):
+            with st.container(border=True):
+                c_k1, c_k2, c_k3, c_k4 = st.columns([2, 2, 3, 1])
+                with c_k1:
+                    new_b_name = st.text_input(f"성명 (문서 서명란)", value=b_info.get("name", ""), key=f"cfg_bname_{b_key}")
+                with c_k2:
+                    new_b_phone = st.text_input(f"연락처", value=b_info.get("phone", ""), key=f"cfg_bphone_{b_key}")
+                with c_k3:
+                    new_b_email = st.text_input(f"이메일", value=b_info.get("email", ""), key=f"cfg_bemail_{b_key}")
+                with c_k4:
+                    st.text(" ")
+                    if st.button("🗑️ 삭제", key=f"del_b_{b_key}", help=f"{b_key} 삭제"):
+                        staff_keys_to_delete.append(b_key)
+                
+                b_info["name"] = new_b_name.strip()
+                b_info["phone"] = new_b_phone.strip()
+                b_info["email"] = new_b_email.strip()
+        
+        for dk in staff_keys_to_delete:
+            if dk in current_buyers:
+                del current_buyers[dk]
+            st.rerun()
+            
+        st.markdown("---")
+        with st.expander("➕ 새 구매담당자 추가", expanded=False):
+            c_add1, c_add2 = st.columns(2)
+            with c_add1:
+                add_label = st.text_input("드롭다운 표시명 (예: 홍길동 사원)", key="add_b_label")
+                add_name = st.text_input("실제 성명 (예: 홍길동)", key="add_b_name")
+            with c_add2:
+                add_phone = st.text_input("연락처 (예: 02-1234-5678)", key="add_b_phone")
+                add_email = st.text_input("이메일 (예: hong@sejong.ac.kr)", key="add_b_email")
+                
+            if st.button("추가하기", key="btn_add_buyer"):
+                if add_label.strip() and add_name.strip():
+                    current_buyers[add_label.strip()] = {
+                        "name": add_name.strip(),
+                        "phone": add_phone.strip(),
+                        "email": add_email.strip()
+                    }
+                    st.success(f"'{add_label.strip()}' 담당자가 추가되었습니다.")
+                    st.rerun()
+                else:
+                    st.error("표시명과 실제 성명을 모두 입력해주세요.")
+
+    with tab_inspector:
+        st.markdown("#### 🔍 검수 담당자 기본 정보")
+        st.caption("발주서 문서에 기본으로 들어갈 검수담당자 정보입니다.")
+        insp = admin_cfg.get("inspector_info", {})
+        i_name = st.text_input("검수담당자 성명", value=insp.get("name", "경제용"), key="cfg_insp_name")
+        i_phone = st.text_input("검수담당자 연락처", value=insp.get("phone", "02-3408-4058"), key="cfg_insp_phone")
+        i_email = st.text_input("검수담당자 이메일", value=insp.get("email", "rudwpdyd@sejong.ac.kr"), key="cfg_insp_email")
+        
+        insp["name"] = i_name.strip()
+        insp["phone"] = i_phone.strip()
+        insp["email"] = i_email.strip()
+        
+    st.divider()
+    c_btn1, c_btn2 = st.columns([1, 1])
+    with c_btn1:
+        if st.button("💾 설정 저장하기", type="primary", use_container_width=True):
+            if save_app_config(admin_cfg):
+                st.session_state["admin_cfg"] = json.loads(json.dumps(admin_cfg))
+                st.success("✅ 설정이 성공적으로 저장되었습니다! 즉시 반영됩니다.")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error("🚨 설정 파일 저장 실패")
+    with c_btn2:
+        if st.button("🔄 기본값으로 복원", type="secondary", use_container_width=True):
+            save_app_config(DEFAULT_APP_CONFIG)
+            st.session_state["admin_cfg"] = json.loads(json.dumps(DEFAULT_APP_CONFIG))
+            st.info("기본 설정으로 복원되었습니다.")
+            time.sleep(0.5)
+            st.rerun()

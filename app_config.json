@@ -1,0 +1,24 @@
+{
+  "app_title": "구매 업무 보조",
+  "sidebar_title": "💼 구매 업무 보조",
+  "headline_extractor": "구매추출기",
+  "headline_contract": "구매계약관리",
+  "btn_load_contract": "계약 데이터 불러오기",
+  "buyer_staff": {
+    "권순철 사원": {
+      "name": "권순철",
+      "phone": "02-6935-2624",
+      "email": "hagrid0924@sejong.ac.kr"
+    },
+    "김민석 사원": {
+      "name": "김민석",
+      "phone": "02-3408-3032",
+      "email": "sejongtwice@sejong.ac.kr"
+    }
+  },
+  "inspector_info": {
+    "name": "경제용",
+    "phone": "02-3408-4058",
+    "email": "rudwpdyd@sejong.ac.kr"
+  }
+}
