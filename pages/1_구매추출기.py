@@ -887,11 +887,14 @@ def extract_contract_info(text):
     # 본문 내 실사용자/업체 메모 패턴이 직접 포함된 경우 함께 추출
     result['smart_memo'] = parse_smart_contact_memo(text)
     
-    # 💡 rERP 문서에 연구책임자정보가 명시되어 있다면 실사용자로 최우선 반영
-    if result.get('pi_name'):
+    # 💡 사용자가 직접 입력한 메모/정보가 최우선입니다.
+    # 사용자가 입력한 실사용자 정보가 없을 때만(공란일 때만) 계약관리의 연구책임자정보를 fallback으로 반영합니다.
+    if not result['smart_memo'].get('user_name') and result.get('pi_name'):
         result['smart_memo']['user_name'] = f"{result['pi_name']} {result.get('pi_position', '')}".strip()
-        result['smart_memo']['user_phone'] = result.get('pi_phone', '')
-        result['smart_memo']['user_email'] = result.get('pi_email', '')
+        if not result['smart_memo'].get('user_phone'):
+            result['smart_memo']['user_phone'] = result.get('pi_phone', '')
+        if not result['smart_memo'].get('user_email'):
+            result['smart_memo']['user_email'] = result.get('pi_email', '')
 
     # 💡 rERP 계약업체 대표자가 명시되어 있고 메모상 업체담당자가 없거나 헤더명인 경우 대표자명 반영
     rep_m = re.search(r'대표자\s*([^\t\r\n\s]+(?:\s+[^\t\r\n\s]+)*?)\s*(?:전화번호|법인번호|사업자번호)', clean_text)
@@ -963,12 +966,21 @@ def parse_smart_contact_memo(text):
         clean = re.sub(r'\s+', ' ', clean).strip()
         return clean, ph, em
 
-    user_prefix = r'^(실사용자|사용자|담당교수|교수|연구원|신청자|기안자|성명|이름)[\s:：/\-]*'
+    user_prefix = r'^(실사용자|사용자|담당교수|교수|연구원|신청자|성명|이름)[\s:：/\-]*'
     vendor_prefix = r'^(업체담당자|업체|협력사|거래처|vendor|공급사|담당자|성명|이름)[\s:：/\-]*'
 
     for idx, line in enumerate(lines):
+        # 결재선(기안자/과장/부장 등) 및 rERP 시스템 헤더/칼럼 행은 메모 분석 대상에서 제외
+        if any(kw in line for kw in [
+            '과장', '부장', '단장', '결재', '구매계약서', '상세보기', '재원정보', 
+            '심의정보', '첨부문서', '물품내역', '연구책임자정보', '과제정보', '사업장', 
+            '구매요구번호', '진행상태', '보완사항', '구매진행상세', '계약사유', '계약업체명', 
+            '계약건명', '계약금액'
+        ]):
+            continue
+
         is_vendor = any(kw in line for kw in ['업체담당자', '업체', '협력사', '거래처', 'vendor', '공급사'])
-        is_user = any(kw in line for kw in ['실사용자', '사용자', '담당교수', '교수', '연구원', '신청자', '기안자'])
+        is_user = any(kw in line for kw in ['실사용자', '사용자', '담당교수', '교수', '연구원', '신청자'])
 
         target = None
         if is_vendor:
