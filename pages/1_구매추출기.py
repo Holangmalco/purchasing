@@ -839,12 +839,42 @@ def extract_contract_info(text):
         'req_no': re.search(r'구매요구번호\s*\*?\s*(\d+)', clean_text),
         'con_name': re.search(r'계약건명\s*(.*?)\s*납품기간', clean_text),
         'con_amount': re.search(r'계약금액\s*([\d,]+)', clean_text),
+        'con_deposit': re.search(r'계약보증금\s*([\d,]+)', clean_text),
         'vendor_name': re.search(r'계약업체명\s*(.*?)\s*사업자번호', clean_text),
-        'buyer_name': re.search(r'계약담당자\s*(.*?)\s*접수일자', clean_text) or re.search(r'계약담당자\s*([^\s]+)', clean_text),
+        'buyer_name': (
+            re.search(r'계약담당자\s*(.*?)\s*접수일자', clean_text) or 
+            re.search(r'계약담당자\s*([^\s]+)', clean_text) or
+            re.search(r'계약자\s*([^\s]+)', clean_text)
+        ),
         'email': re.search(r'e-mail주소\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', clean_text)
     }
     result = {k: v.group(1).strip() if v else "" for k, v in info.items()}
     result['con_amount'] = str(safe_int(result.get('con_amount', 0)))
+    if result.get('con_deposit'):
+        result['con_deposit'] = str(safe_int(result['con_deposit']))
+
+    # 💡 지원사업 파싱 (신임교원지원사업 여부 판별)
+    supp_m = re.search(r'지원사업\s*([^\t\r\n\s]+)', clean_text)
+    supp_txt = supp_m.group(1).strip() if supp_m else ""
+    is_new_fac = ('신임교원' in supp_txt) or ('신임교원' in clean_text)
+    result['support_name'] = supp_txt
+    result['project_type'] = "신임교원지원사업" if is_new_fac else "일반 중앙구매"
+
+    # 💡 연구책임자정보 직접 추출 (rERP 본문 복사 시 자동 채우기)
+    pi_match = re.search(r'연구책임자정보\s*([^/\s]+)\s*/\s*([^/\s]+)\s*/\s*([^/\s]+)\s*/\s*([0-9\-]+)\s*/\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', clean_text)
+    if pi_match:
+        result['pi_name'] = pi_match.group(1).strip()
+        result['pi_position'] = pi_match.group(2).strip()
+        result['pi_dept'] = pi_match.group(3).strip()
+        raw_ph = pi_match.group(4).strip()
+        dig = re.sub(r'[^\d]', '', raw_ph)
+        if len(dig) == 11 and dig.startswith('01'):
+            result['pi_phone'] = f"{dig[:3]}-{dig[3:7]}-{dig[7:]}"
+        elif len(dig) == 10 and dig.startswith('01'):
+            result['pi_phone'] = f"{dig[:3]}-{dig[3:6]}-{dig[6:]}"
+        else:
+            result['pi_phone'] = raw_ph
+        result['pi_email'] = pi_match.group(5).strip()
     
     loc_match = re.search(r'납품장소\s*(.*?)\s*계약금액', clean_text)
     result['location'] = ""
@@ -856,6 +886,20 @@ def extract_contract_info(text):
 
     # 본문 내 실사용자/업체 메모 패턴이 직접 포함된 경우 함께 추출
     result['smart_memo'] = parse_smart_contact_memo(text)
+    
+    # 💡 rERP 문서에 연구책임자정보가 명시되어 있다면 실사용자로 최우선 반영
+    if result.get('pi_name'):
+        result['smart_memo']['user_name'] = f"{result['pi_name']} {result.get('pi_position', '')}".strip()
+        result['smart_memo']['user_phone'] = result.get('pi_phone', '')
+        result['smart_memo']['user_email'] = result.get('pi_email', '')
+
+    # 💡 rERP 계약업체 대표자가 명시되어 있고 메모상 업체담당자가 없거나 헤더명인 경우 대표자명 반영
+    rep_m = re.search(r'대표자\s*([^\t\r\n\s]+(?:\s+[^\t\r\n\s]+)*?)\s*(?:전화번호|법인번호|사업자번호)', clean_text)
+    if rep_m:
+        cur_vrep = result['smart_memo'].get('vendor_rep', '')
+        if not cur_vrep or cur_vrep in ['계약업체정보', '업체']:
+            result['smart_memo']['vendor_rep'] = rep_m.group(1).strip()
+
     return result
 
 def parse_smart_contact_memo(text):
@@ -926,13 +970,15 @@ def parse_smart_contact_memo(text):
         is_vendor = any(kw in line for kw in ['업체담당자', '업체', '협력사', '거래처', 'vendor', '공급사'])
         is_user = any(kw in line for kw in ['실사용자', '사용자', '담당교수', '교수', '연구원', '신청자', '기안자'])
 
-        target = 'user'
+        target = None
         if is_vendor:
             target = 'vendor'
         elif is_user:
             target = 'user'
-        elif idx == 1:
-            target = 'vendor'
+        elif len(lines) <= 2:
+            target = 'user' if idx == 0 else 'vendor'
+        else:
+            continue
 
         if target == 'user':
             nm, ph, em = extract_from_line(line, user_prefix)
@@ -1718,6 +1764,18 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
                         st.session_state[f"v_em_{i}"] = parsed.get('vendor_email', '')
                         st.rerun()
 
+                # 💡 사업 구분 (신임교원지원사업 vs 일반 중앙구매) 자동 선택 및 수동 변경
+                ptype_options = ["🏢 일반 중앙구매 (산학협력단)", "🏫 신임교원지원사업 (교비)"]
+                default_p_idx = 1 if cd.get('project_type') == "신임교원지원사업" else 0
+                c_pt1, c_pt2 = st.columns([1, 2])
+                with c_pt1:
+                    sel_ptype = st.selectbox("사업 구분", ptype_options, index=default_p_idx, key=f"ptype_{i}")
+                with c_pt2:
+                    if "신임교원" in sel_ptype:
+                        st.info("🏫 **신임교원지원사업(교비)** 양식이 적용됩니다. (사업자등록증: 세종대학교)")
+                    else:
+                        st.caption("🏢 **일반 중앙구매(산학협력단)** 양식이 적용됩니다. (사업자등록증: 산학협력단)")
+
                 c1, c2, c3 = st.columns(3)
                 with c1: e_name = st.text_input("계약건명 (발주개요)", value=cd.get('con_name', ''), key=f"e_nm_{i}")
                 with c2: e_amt = st.text_input("계약금액 (숫자만)", value=cd.get('con_amount', '0'), key=f"e_amt_{i}")
@@ -1794,7 +1852,16 @@ elif menu in ["🤝 구매계약관리", "🤝 구매계약 분석"]:
                         st.error("🚨 필수 정보(계약건명, 계약금액, 협력사, 실사용자 성명)를 모두 입력해주세요.")
                     else:
                         try:
-                            tpl_name = "template_over10mil.docx" if amt_val >= 10000000 else "template_under10mil.docx"
+                            is_new_fac = "신임교원" in sel_ptype
+                            new_fac_tpl = "template_new_faculty.docx"
+
+                            if is_new_fac and os.path.exists(new_fac_tpl):
+                                tpl_name = new_fac_tpl
+                            else:
+                                tpl_name = "template_over10mil.docx" if amt_val >= 10000000 else "template_under10mil.docx"
+                                if is_new_fac and not os.path.exists(new_fac_tpl):
+                                    st.warning(f"⚠️ 신임교원지원사업 전용 양식('{new_fac_tpl}')이 아직 없어 기본 서식({tpl_name})으로 생성되었습니다. 프로젝트 폴더에 {new_fac_tpl}을 추가하시면 자동으로 적용됩니다.")
+
                             doc = DocxTemplate(tpl_name)
                             
                             final_deposit_str = f"{calc_deposit:,}" if calc_deposit > 0 else ""
