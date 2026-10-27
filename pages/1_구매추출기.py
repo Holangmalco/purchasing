@@ -219,8 +219,8 @@ def handle_error(err_type, msg, e=None):
 
 USER_DB = load_user_db()
 BUYER_STAFF = {
-    "권순철 사원": {"name": "권순철 사원", "phone": "02-6935-2624", "email": "hagrid0924@sejong.ac.kr"},
-    "김민석 사원": {"name": "김민석 사원", "phone": "02-3408-3032", "email": "sejongtwice@sejong.ac.kr"}
+    "권순철 사원": {"name": "권순철", "phone": "02-6935-2624", "email": "hagrid0924@sejong.ac.kr"},
+    "김민석 사원": {"name": "김민석", "phone": "02-3408-3032", "email": "sejongtwice@sejong.ac.kr"}
 }
 for _bk, _bv in BUYER_STAFF.items():
     USER_DB[_bk] = {"phone": _bv["phone"], "email": _bv["email"]}
