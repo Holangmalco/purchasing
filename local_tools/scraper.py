@@ -240,7 +240,7 @@ def analyze_folder_documents(folder_path):
     gen_config = types.GenerateContentConfig(response_mime_type="application/json")
     
     # 3단계 폴백 체인 (3.5-flash-lite -> 3.8-flash -> 2.5-flash)
-    for model_name in ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-2.5-flash"]:
+    for model_name in ["gemini-2.5-flash"]:
         try:
             resp = ai_client.models.generate_content(model=model_name, contents=contents, config=gen_config)
             text = (resp.text or "").strip()
@@ -450,6 +450,16 @@ def process_current_detail_window(default_folder_hint="구매요청"):
             if len(parts) >= 1: pi_name = parts[0]
             if len(parts) >= 3: pi_dept = parts[2]
             elif len(parts) >= 2: pi_dept = parts[1]
+
+            clean_body = body_text.replace(" ", "")
+            if pi_name == "박재우" and ("지역혁신중심" in clean_body or "RISE" in clean_body.upper() or "라이즈" in clean_body):
+                pi_dept += "(RISE사업단)"
+            elif pi_name == "김재호" and "사물인터넷" in clean_body:
+                pi_dept += "(사물인터넷혁신융합대학사업단)"
+            elif pi_name == "송오영" and "SW중심대학" in clean_body:
+                pi_dept += "(SW중심대학사업단)"
+            elif pi_name == "이기학" and ("G-LAMP" in clean_body.upper() or "GLAMP" in clean_body.upper() or "대학기초연구소" in clean_body):
+                pi_dept += "(G-LAMP사업단)"
 
         # 건명 추출
         subject = default_folder_hint

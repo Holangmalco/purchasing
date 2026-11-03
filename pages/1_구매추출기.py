@@ -20,12 +20,18 @@ import requests
 # ---------------------------------------------------------
 # 💡 [신규] 국세청 사업자 휴폐업 조회 엔진
 # ---------------------------------------------------------
-def check_nts_business(biz_no_str):
+# 💡 [신규] 국세청 사업자 휴폐업 조회 엔진 (1시간 캐싱으로 반복 호출 방지)
+@st.cache_data(ttl=3600, show_spinner=False)
+def check_nts_business(biz_no_str, api_key=""):
     clean_b = re.sub(r'[^\d]', '', str(biz_no_str))
     if len(clean_b) != 10: 
         return "⚠️ 번호오류"
     
-    url = f"https://api.odcloud.kr/api/nts-businessman/v1/status?serviceKey={NTS_API_KEY}"
+    key_to_use = api_key or (globals().get("NTS_API_KEY") or "")
+    if not key_to_use:
+        return "⚠️ API키 누락"
+    
+    url = f"https://api.odcloud.kr/api/nts-businessman/v1/status?serviceKey={key_to_use}"
     headers = {"Content-Type": "application/json"}
     data = {"b_no": [clean_b]}
     
@@ -50,10 +56,60 @@ def check_nts_business(biz_no_str):
 DEBUG = False 
 MAX_UPLOAD_FILES = 10
 MAX_FILE_SIZE_MB = 10
-AI_MODEL = "gemini-3.5-flash-lite"
+AI_MODEL = "gemini-2.5-flash"
 SESSION_AI_KEY = "ai_res"
 SESSION_REQ_KEY = "req_analysis_done"
-REQUIRED_FILES = ["template_under10mil.docx", "template_over10mil.docx"]
+REQUIRED_FILES = ["template_under10mil.docx", "template_over10mil.docx", "template_new_faculty.docx"]
+
+def get_template_path(filename):
+    """
+    템플릿 파일의 실제 절대 경로를 탐색하여 반환합니다.
+    (프로젝트 루트 폴더, pages 폴더, 현재 작업 디렉토리 순)
+    """
+    if isinstance(filename, list):
+        for f in filename:
+            p = get_template_path(f)
+            if p: return p
+        return None
+        
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(base_dir, filename),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), filename),
+        os.path.abspath(filename)
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+def sync_new_faculty_template():
+    """
+    신임교원용 원본 eformsign 템플릿(«» 메일머지 태그)이 수정되거나 추가되었을 경우,
+    python-docx-template 엔진에서 인식 가능한 {{}} 태그로 변환하여 template_new_faculty.docx를 동기화합니다.
+    """
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    korean_tpl = get_template_path("신임교원용_발주서(eformsign 템플릿)_대학_국가계약법_1천만원 미만.docx")
+    target_tpl = os.path.join(base_dir, "template_new_faculty.docx")
+    
+    if korean_tpl and os.path.exists(korean_tpl):
+        if not os.path.exists(target_tpl) or os.path.getmtime(korean_tpl) > os.path.getmtime(target_tpl):
+            try:
+                import zipfile
+                with zipfile.ZipFile(korean_tpl, 'r') as zin:
+                    with zipfile.ZipFile(target_tpl, 'w', compression=zipfile.ZIP_DEFLATED) as zout:
+                        for item in zin.infolist():
+                            data = zin.read(item.filename)
+                            if item.filename in ('word/document.xml', 'word/header1.xml', 'word/footer1.xml'):
+                                text = data.decode('utf-8')
+                                if chr(171) in text or chr(187) in text:
+                                    text = text.replace(chr(171), '{{').replace(chr(187), '}}')
+                                    data = text.encode('utf-8')
+                            zout.writestr(item, data)
+            except Exception:
+                pass
+
+sync_new_faculty_template()
 
 def get_config_path():
     p1 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app_config.json")
@@ -68,7 +124,8 @@ DEFAULT_APP_CONFIG = {
     "app_title": "구매 업무 보조",
     "sidebar_title": "💼 구매 업무 보조",
     "menu_extractor": "💰 구매추출기",
-    "menu_contract": "🤝 구매계약관리",
+    "menu_contract": "🤝 구매계약분석",
+    "menu_history": "🕒 분석내역 불러오기",
     "admin_pin": "1234",
     # 2. 구매추출기 화면
     "ext_main_title": "💰 구매추출기",
@@ -82,7 +139,7 @@ DEFAULT_APP_CONFIG = {
     "ext_erp_items_title": "📦 ERP 품목 내역",
     "ext_bank_title": "🏦 통장사본 계좌정보",
     # 3. 구매계약관리 화면
-    "con_main_title": "🤝 구매계약관리",
+    "con_main_title": "🤝 구매계약분석",
     "con_desc": "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.",
     "con_card_title": "📄 [계약 {no}] 데이터 입력",
     "btn_load_contract": "계약 데이터 불러오기",
@@ -97,6 +154,13 @@ DEFAULT_APP_CONFIG = {
         "name": "경제용",
         "phone": "02-3408-4058",
         "email": "rudwpdyd@sejong.ac.kr"
+    },
+    # 5. 특수 사업단 소속 교수님 매핑 규칙
+    "special_projects": {
+        "박재우": {"kw": ["지역혁신중심", "RISE", "라이즈"], "suffix": "(RISE사업단)"},
+        "김재호": {"kw": ["사물인터넷"], "suffix": "(사물인터넷혁신융합대학사업단)"},
+        "송오영": {"kw": ["SW중심대학"], "suffix": "(SW중심대학사업단)"},
+        "이기학": {"kw": ["G-LAMP", "GLAMP", "대학기초연구소"], "suffix": "(G-LAMP사업단)"}
     }
 }
 
@@ -157,6 +221,9 @@ except Exception:
     pass
 
 load_dotenv()
+dev_env = os.path.join(r"C:\PurchasingExtractor_Dev", ".env")
+if os.path.exists(dev_env):
+    load_dotenv(dev_env)
 
 def get_secret(primary_key, aliases=None):
     if aliases is None: aliases = []
@@ -191,7 +258,7 @@ def get_secret(primary_key, aliases=None):
 API_KEY = get_secret("GEMINI_API_KEY", ["GEMINI_KEY", "GOOGLE_API_KEY", "API_KEY"])
 NTS_API_KEY = get_secret("NTS_API_KEY", ["NTS_KEY", "ODCLOUD_API_KEY"])
 
-missing_files = [f for f in REQUIRED_FILES if not os.path.exists(f)]
+missing_files = [f for f in REQUIRED_FILES if not get_template_path(f)]
 if missing_files:
     st.error(f"🚨 필수 파일 누락으로 실행 불가: {', '.join(missing_files)}")
     st.stop()
@@ -285,14 +352,108 @@ def load_user_db():
     try:
         df = pd.read_excel("user_list.xlsx").fillna("")
         for _, row in df.iterrows():
-            name = str(row.get('성명 및 직위', '')).strip()
-            dept = str(row.get('소속', '')).strip()
+            name = str(row.get('성명 및 직위') or row.get('성명') or '').strip()
+            dept = str(row.get('소속') or row.get('학과') or '').strip()
+            phone = str(row.get('연락처', '')).strip()
+            email = str(row.get('이메일', '')).strip()
             if name:
                 key = f"{name} ({dept})" if dept else name
-                db[key] = {"phone": str(row.get('연락처', '')).strip(), "email": str(row.get('이메일', '')).strip()}
+                db[key] = {"phone": phone, "email": email}
+                pure_name = re.sub(r'(교수|부교수|조교수|사원|과장|대리|연구원|연구교수|박사|팀장|선임|책임)', '', name).strip()
+                if pure_name and pure_name not in db:
+                    db[pure_name] = {"phone": phone, "email": email}
     except Exception as e: 
         log(f"DB 로드 실패: {e}")
     return db
+
+def lookup_user_contact(raw_name, raw_dept=""):
+    """
+    USER_DB에서 교직원/연구원을 검색하여 누락된 연락처 및 이메일을 보완합니다.
+    """
+    if not raw_name or not USER_DB:
+        return None
+    
+    clean_target = clean_name(raw_name).strip()
+    clean_dept = clean_name(raw_dept).strip() if raw_dept else ""
+
+    # 1. 완전 일치 또는 포함 일치
+    for k, v in USER_DB.items():
+        k_clean = clean_name(k)
+        if clean_target and (k_clean == clean_target or clean_target in k_clean):
+            if clean_dept:
+                if clean_dept in k_clean:
+                    return v
+            else:
+                return v
+
+    # 2. 직급 제거 후 성명 2~4글자 매칭
+    short_target = re.sub(r'(교수|부교수|조교수|사원|과장|대리|연구원|연구교수|박사|팀장|선임|책임)', '', str(raw_name)).strip()
+    if short_target and len(short_target) >= 2:
+        for k, v in USER_DB.items():
+            if short_target in k:
+                return v
+                
+    return None
+
+def is_internal_sejong_email(email_str):
+    """
+    유저리스트(USER_DB)에 등록된 이메일 및
+    @sejong.ac.kr, @sju.ac.kr, @rcv.sejong.ac.kr 등 우리 측 교내 이메일 여부를 정밀 판별합니다.
+    이메일은 절대 업체(협력사) 담당자 이메일로 취급되지 않고 실사용자 이메일로만 인식됩니다.
+    """
+    if not email_str:
+        return False
+    em = str(email_str).strip().lower()
+    if not em or "@" not in em:
+        return False
+        
+    domain = em.split("@")[-1].strip()
+    
+    # 1. 세종대 및 산학협력단 / 연구실 도메인 체크 (@sejong.ac.kr, @sju.ac.kr, @rcv.sejong.ac.kr 등)
+    internal_domains = [
+        "sejong.ac.kr",
+        "sju.ac.kr",
+        "rcv.sejong.ac.kr"
+    ]
+    for d in internal_domains:
+        if domain == d or domain.endswith("." + d):
+            return True
+            
+    # 2. user_list.xlsx (USER_DB) 및 구매/검수 담당자 목록 이메일 체크
+    if 'USER_DB' in globals() and USER_DB:
+        for v in USER_DB.values():
+            db_em = str(v.get("email", "")).strip().lower()
+            if db_em and db_em == em:
+                return True
+                
+    if 'BUYER_STAFF' in globals() and BUYER_STAFF:
+        for v in BUYER_STAFF.values():
+            b_em = str(v.get("email", "")).strip().lower()
+            if b_em and b_em == em:
+                return True
+                
+    if 'INSPECTOR_INFO' in globals() and INSPECTOR_INFO:
+        i_em = str(INSPECTOR_INFO.get("email", "")).strip().lower()
+        if i_em and i_em == em:
+            return True
+            
+    return False
+
+def check_special_project_affiliation(pi_name, pi_dept, context_text=""):
+    """특수 사업단 소속 교수님의 학과 뒤에 (사업단명)을 자동 부착합니다."""
+    if not pi_name or not pi_dept:
+        return pi_dept
+    
+    spec_map = APP_CONFIG.get("special_projects", DEFAULT_APP_CONFIG.get("special_projects", {}))
+    cfg_rule = spec_map.get(pi_name.strip())
+    if cfg_rule:
+        suffix = cfg_rule.get("suffix", "")
+        if suffix and suffix not in pi_dept:
+            kws = cfg_rule.get("kw", [])
+            clean_ctx = str(context_text).upper().replace(" ", "")
+            if any(str(kw).upper() in clean_ctx for kw in kws):
+                return f"{pi_dept}{suffix}"
+    return pi_dept
 
 def handle_error(err_type, msg, e=None):
     log_msg = f"[{err_type}] {msg}"
@@ -350,6 +511,31 @@ def save_to_cache(req_no, meta_data, raw_data):
                 log(f"구글 시트 저장 실패 ({res.status_code}): {res.text}")
         except Exception as e:
             log(f"구글 시트 API 연동 실패: {e}")
+
+def delete_from_cache(req_no):
+    req_no_str = str(req_no).strip()
+    # 1. 로컬 캐시 삭제
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+            if req_no_str in cache:
+                del cache[req_no_str]
+                with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log(f"로컬 캐시 삭제 오류: {e}")
+
+    # 2. 구글 시트 영구 저장소 삭제 요청
+    if GSHEETS_URL:
+        try:
+            res = requests.post(GSHEETS_URL, json={"action": "delete", "data": {"구매요구번호": req_no_str}}, timeout=8)
+            if res.status_code == 200:
+                log(f"구글 시트 삭제 요청 성공 ({req_no_str})")
+            else:
+                log(f"구글 시트 삭제 요청 응답 ({res.status_code}): {res.text}")
+        except Exception as e:
+            log(f"구글 시트 삭제 API 연동 실패: {e}")
 
 def get_cache_list():
     result_map = {}
@@ -490,16 +676,9 @@ def extract_base_info(text):
             info['pi_formatted'] = f"{parts[0]} / {format_phone(parts[-2])} / {parts[-1]}"
             
             clean_text = text.replace(" ", "")
-            pi_name = info['pi_name']
             prj_context_match = re.search(r'과제성격(.*?)(연구책임자정보|연차연구기간)', clean_text, flags=re.DOTALL)
-            prj_context = prj_context_match.group(1) if prj_context_match else ""
-            
-            if pi_name == "박재우" and ("지역혁신중심" in prj_context or "RISE" in prj_context.upper()):
-                info['pi_dept'] += "(RISE사업단)"
-            elif pi_name == "김재호" and "사물인터넷" in prj_context:
-                info['pi_dept'] += "(사물인터넷혁신융합대학사업단)"
-            elif pi_name == "송오영" and "SW중심대학" in prj_context:
-                info['pi_dept'] += "(SW중심대학사업단)"
+            prj_context = prj_context_match.group(1) if prj_context_match else clean_text
+            info['pi_dept'] = check_special_project_affiliation(info['pi_name'], info['pi_dept'], prj_context)
         else:
             info['pi_formatted'] = pi_match.group(1).strip()
             
@@ -601,7 +780,17 @@ def parse_contact(token_str):
         
     clean_name = re.sub(r'[\(\)\[\]\-\:\/\_\=\+]', '', clean_name).strip()
 
-    if clean_name and phone: return f"{clean_name} / {phone}"
+    # 💡 [Part 1 - 5번] 연락처나 이메일이 누락된 경우 USER_DB에서 자동 보완
+    if clean_name and (not phone or not email):
+        u_info = lookup_user_contact(clean_name)
+        if u_info:
+            if not phone and u_info.get("phone"):
+                phone = u_info["phone"]
+            if not email and u_info.get("email"):
+                email = u_info["email"]
+
+    if clean_name and phone and email: return f"{clean_name} / {phone} / {email}"
+    elif clean_name and phone: return f"{clean_name} / {phone}"
     elif clean_name and email: return f"{clean_name} / {email}"
     elif email: return f"담당자 / {email}"
     elif phone: return f"담당자 / {phone}"
@@ -723,10 +912,17 @@ def parse_service_erp(text, force_category):
             continue
     return items, valid_format
 
-def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_text=""):
+def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_text="", raw_req_text=""):
     rules_triggered = []
     if "간접비" in raw_finance_text: rules_triggered.append("간접비건 확인")
     
+    # 💡 [Part 1 - 5번] 부가세 0원 및 면세 판별 로직 결재의견 자동 반영
+    if is_vat_zero_in_finance(raw_req_text, raw_finance_text):
+        if is_tax_exempt_project(raw_req_text):
+            rules_triggered.append("면세 과제 확인 (부가세 0원 정상)")
+        else:
+            rules_triggered.append("부가세 0원 확인필요 (과세 과제 여부 검토)")
+
     is_goods = "물품" in req_type
     is_service = "용역" in req_type or "공사" in req_type
     
@@ -742,6 +938,7 @@ def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_tex
         name = itm.get('name', '').upper()
 
         is_sw = any(kw in name for kw in ['소프트웨어', 'SW', 'S/W', '라이선스', '구독']) or '소프트웨어' in erp_cat
+        is_consumable_kw = any(kw in name.lower() for kw in ['시약', '용액', '항체', '키트', 'kit', '튜브', '팁', '필터', '소모품'])
 
         if is_service:
             exp_cat = "공사, 용역" if "공사" in req_type else "용역"
@@ -758,6 +955,10 @@ def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_tex
             exp_cat = erp_cat if erp_cat else "소모품"
 
         expected_cats.append(exp_cat)
+
+        # 💡 [Part 1 - 5번] 단가 15만원 초과 비품인데 물품 미등록인 경우 경고
+        if is_goods and unit_price > 150000 and "아니오" in reg_status and not is_consumable_kw and not is_sw:
+            rules_triggered.append("물품등록여부 확인필요 (단가 15만원 초과 미등록)")
 
         if erp_cat in ['', '공란']:
             rules_triggered.append("물품분류구분 입력필요")
@@ -822,9 +1023,7 @@ def run_ai_analysis(files, req_type):
     gen_config = types.GenerateContentConfig(response_mime_type="application/json")
             
     fallback_chain = [
-        ("gemini-3.5-flash-lite", 1),
-        ("gemini-3.8-flash", 1),
-        ("gemini-2.5-flash", 1)
+        ("gemini-2.5-flash", 2)
     ]
     
     failure_history = []
@@ -927,10 +1126,10 @@ def extract_contract_info(text):
     clean_text = text.replace('\n', ' ').replace('\r', '').replace('\t', ' ')
     info = {
         'req_no': re.search(r'구매요구번호\s*\*?\s*(\d+)', clean_text),
-        'con_name': re.search(r'계약건명\s*(.*?)\s*납품기간', clean_text),
+        'con_name': re.search(r'계약건명\s*(.*?)\s*(?:납품기간|계약금액|총금액|납품장소|$)', clean_text),
         'con_amount': re.search(r'계약금액\s*([\d,]+)', clean_text),
         'con_deposit': re.search(r'계약보증금\s*([\d,]+)', clean_text),
-        'vendor_name': re.search(r'계약업체명\s*(.*?)\s*사업자번호', clean_text),
+        'vendor_name': re.search(r'계약업체명\s*(.*?)\s*(?:사업자번호|대표자|전화번호|$)', clean_text),
         'buyer_name': (
             re.search(r'계약담당자\s*(.*?)\s*접수일자', clean_text) or 
             re.search(r'계약담당자\s*([^\s]+)', clean_text) or
@@ -950,12 +1149,14 @@ def extract_contract_info(text):
     result['support_name'] = supp_txt
     result['project_type'] = "신임교원지원사업" if is_new_fac else "일반 중앙구매"
 
-    # 💡 연구책임자정보 직접 추출 (rERP 본문 복사 시 자동 채우기)
+    # 💡 연구책임자정보 직접 추출
     pi_match = re.search(r'연구책임자정보\s*([^/\s]+)\s*/\s*([^/\s]+)\s*/\s*([^/\s]+)\s*/\s*([0-9\-]+)\s*/\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', clean_text)
     if pi_match:
         result['pi_name'] = pi_match.group(1).strip()
         result['pi_position'] = pi_match.group(2).strip()
-        result['pi_dept'] = pi_match.group(3).strip()
+        raw_dept = pi_match.group(3).strip()
+        result['pi_dept'] = check_special_project_affiliation(result['pi_name'], raw_dept, clean_text)
+        
         raw_ph = pi_match.group(4).strip()
         dig = re.sub(r'[^\d]', '', raw_ph)
         if len(dig) == 11 and dig.startswith('01'):
@@ -966,16 +1167,42 @@ def extract_contract_info(text):
             result['pi_phone'] = raw_ph
         result['pi_email'] = pi_match.group(5).strip()
     
-    loc_match = re.search(r'납품장소\s*(.*?)\s*계약금액', clean_text)
+    # 💡 납품장소 파싱 개선: B101호, 101-1호 등 방번호 원형 보존 및 슬래시 유연화
+    loc_match = re.search(r'납품장소\s*(.*?)\s*(?:계약금액|총금액|$)', clean_text)
     result['location'] = ""
-    if loc_match and '/' in loc_match.group(1):
-        parts = [p.strip() for p in loc_match.group(1).split('/')]
-        if len(parts) >= 3:
-            room_match = re.search(r'(\d+)', parts[-1])
-            if room_match: result['location'] = f"{parts[0]} {int(room_match.group(1))}호"
+    if loc_match:
+        loc_str = loc_match.group(1).strip()
+        if '/' in loc_str:
+            parts = [p.strip() for p in loc_str.split('/') if p.strip()]
+            if len(parts) >= 2:
+                bldg = parts[0]
+                room_raw = parts[-1]
+                room_match = re.search(r'([A-Za-z0-9\-가-힣]+(?:호|실|층)?)', room_raw)
+                if room_match:
+                    r_str = room_match.group(1).strip()
+                    if not r_str.endswith(('호', '실', '층')):
+                        r_str += "호"
+                    result['location'] = f"{bldg} {r_str}"
+                else:
+                    result['location'] = f"{bldg} {room_raw}"
+            else:
+                result['location'] = loc_str
+        else:
+            result['location'] = loc_str
 
     # 본문 내 실사용자/업체 메모 패턴이 직접 포함된 경우 함께 추출
     result['smart_memo'] = parse_smart_contact_memo(text)
+    
+    # 본문에서 오인 추출된 과도하게 긴 vendor_rep 정제
+    cur_vrep = result['smart_memo'].get('vendor_rep', '')
+    if cur_vrep and (len(cur_vrep) > 20 or any(bad in cur_vrep for bad in ['계약업체정보', '업체', '법인번호', '사업자번호', '주소'])):
+        result['smart_memo']['vendor_rep'] = ''
+
+    # 💡 [핵심 가드] 세종대/USER_DB 이메일은 업체 메일 칸에 절대 남지 않도록 보증
+    if is_internal_sejong_email(result['smart_memo'].get('vendor_email')):
+        if not result['smart_memo'].get('user_email'):
+            result['smart_memo']['user_email'] = result['smart_memo']['vendor_email']
+        result['smart_memo']['vendor_email'] = ''
     
     # 💡 사용자가 직접 입력한 메모/정보가 최우선입니다.
     # 사용자가 입력한 실사용자 정보가 없을 때만(공란일 때만) 계약관리의 연구책임자정보를 fallback으로 반영합니다.
@@ -1077,7 +1304,6 @@ def parse_smart_contact_memo(text):
         result['vendor_rep'] = v_nm
         result['vendor_phone'] = v_ph
         result['vendor_email'] = v_em
-        return result
 
     elif u_match and not v_match:
         u_chunk = text[u_match.start():]
@@ -1088,7 +1314,6 @@ def parse_smart_contact_memo(text):
         result['user_name'] = u_nm
         result['user_phone'] = u_ph
         result['user_email'] = u_em
-        return result
 
     elif v_match and not u_match:
         v_chunk = text[v_match.start():]
@@ -1099,47 +1324,154 @@ def parse_smart_contact_memo(text):
         result['vendor_rep'] = v_nm
         result['vendor_phone'] = v_ph
         result['vendor_email'] = v_em
-        return result
 
-    # 2. 키워드가 없는 경우: 줄바꿈 및 전화번호 패턴 기준 청크 분할
-    raw_lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
-    clean_lines = [
-        l for l in raw_lines 
-        if not re.search(r'기안자\s+담당\s+과장|사업장/회계단위|지원사업\s+교내|상세보기|구매계약서', l)
-    ]
-    
-    chunks = []
-    current_chunk = []
-    for line in clean_lines:
-        has_phone = bool(re.search(phone_pattern, line))
-        if has_phone and current_chunk and any(re.search(phone_pattern, c) for c in current_chunk):
+    else:
+        # 2. 키워드가 없는 경우: 줄바꿈 및 전화번호 패턴 기준 청크 분할
+        raw_lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
+        clean_lines = [
+            l for l in raw_lines 
+            if not re.search(r'기안자\s+담당\s+과장|사업장/회계단위|지원사업\s+교내|상세보기|구매계약서', l)
+        ]
+        
+        chunks = []
+        current_chunk = []
+        for line in clean_lines:
+            has_phone = bool(re.search(phone_pattern, line))
+            if has_phone and current_chunk and any(re.search(phone_pattern, c) for c in current_chunk):
+                chunks.append('\n'.join(current_chunk))
+                current_chunk = [line]
+            else:
+                current_chunk.append(line)
+        if current_chunk:
             chunks.append('\n'.join(current_chunk))
-            current_chunk = [line]
-        else:
-            current_chunk.append(line)
-    if current_chunk:
-        chunks.append('\n'.join(current_chunk))
 
-    if len(chunks) == 2:
-        u_nm, u_ph, u_em = extract_chunk_info(chunks[0])
-        v_nm, v_ph, v_em = extract_chunk_info(chunks[1])
-        result['user_name'] = u_nm
-        result['user_phone'] = u_ph
-        result['user_email'] = u_em
-        result['vendor_rep'] = v_nm
-        result['vendor_phone'] = v_ph
-        result['vendor_email'] = v_em
-    elif len(chunks) == 1:
-        u_nm, u_ph, u_em = extract_chunk_info(chunks[0])
-        result['user_name'] = u_nm
-        result['user_phone'] = u_ph
-        result['user_email'] = u_em
+        if len(chunks) == 2:
+            c0_nm, c0_ph, c0_em = extract_chunk_info(chunks[0])
+            c1_nm, c1_ph, c1_em = extract_chunk_info(chunks[1])
+            
+            # 💡 [핵심] 이메일 도메인 판별로 실사용자 / 업체 순서 자동 스왑
+            if is_internal_sejong_email(c1_em) and not is_internal_sejong_email(c0_em):
+                u_nm, u_ph, u_em = c1_nm, c1_ph, c1_em
+                v_nm, v_ph, v_em = c0_nm, c0_ph, c0_em
+            else:
+                u_nm, u_ph, u_em = c0_nm, c0_ph, c0_em
+                v_nm, v_ph, v_em = c1_nm, c1_ph, c1_em
+                
+            result['user_name'] = u_nm
+            result['user_phone'] = u_ph
+            result['user_email'] = u_em
+            result['vendor_rep'] = v_nm
+            result['vendor_phone'] = v_ph
+            result['vendor_email'] = v_em
+        elif len(chunks) == 1:
+            u_nm, u_ph, u_em = extract_chunk_info(chunks[0])
+            result['user_name'] = u_nm
+            result['user_phone'] = u_ph
+            result['user_email'] = u_em
+
+    # =========================================================================
+    # 💡 [보정 가드] 세종대/USER_DB 등록 이메일은 무조건 '실사용자' 메일로 강제 이관!
+    # 업체담당자 메일 칸에는 절대 들어가지 못하도록 철저히 차단
+    # =========================================================================
+    cur_vemail = result.get('vendor_email', '').strip()
+    if cur_vemail and is_internal_sejong_email(cur_vemail):
+        if not result.get('user_email'):
+            result['user_email'] = cur_vemail
+        result['vendor_email'] = ''
+
+    # 텍스트 전체에서 세종대/USER_DB 메일이 존재하는데 user_email이 비어있다면 자동 할당
+    if not result.get('user_email'):
+        all_emails = re.findall(email_pattern, text)
+        for em in all_emails:
+            if is_internal_sejong_email(em):
+                result['user_email'] = em
+                break
+
+    # 실사용자 메일과 업체 메일이 동일하게 잡힌 경우 업체 메일 초기화
+    if result.get('user_email') and result.get('vendor_email') == result.get('user_email'):
+        result['vendor_email'] = ''
 
     return result
 
 # ==========================================
 # 5. 화면 UI 구성
 # ==========================================
+
+# ---------------------------------------------------------
+# 🎨 [UI 개선] 미니멀 & 모던 스타일 CSS 주입
+# ---------------------------------------------------------
+st.markdown("""
+<style>
+/* 전역 폰트 및 자간 최적화 */
+html, body, [class*="css"] {
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Segoe UI", Roboto, "Malgun Gothic", sans-serif;
+}
+
+/* 카드 및 컨테이너 라운딩 */
+div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 12px;
+    border: 1px solid #E5E8EB;
+    background-color: #FFFFFF;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+
+/* 사이드바 메뉴 3단 탭 스타일 */
+div[data-testid="stSidebar"] div[role="radiogroup"] {
+    gap: 4px;
+}
+div[data-testid="stSidebar"] div[role="radiogroup"] label {
+    background-color: transparent;
+    padding: 10px 14px;
+    border-radius: 10px;
+    transition: all 0.15s ease-in-out;
+    margin-bottom: 2px;
+    cursor: pointer;
+}
+div[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+    background-color: #F2F4F6;
+}
+div[data-testid="stSidebar"] div[role="radiogroup"] label[data-checked="true"] {
+    background-color: #E8F3FF;
+    font-weight: 600;
+}
+
+/* 버튼 모던 라운딩 */
+div.stButton > button {
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.15s ease;
+}
+div.stDownloadButton > button {
+    border-radius: 8px;
+    font-weight: 600;
+}
+
+/* 제목 타이포그래피 정돈 */
+h1 {
+    font-size: 1.65rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.02em !important;
+    color: #191F28 !important;
+}
+h2 {
+    font-size: 1.35rem !important;
+    font-weight: 700 !important;
+    color: #191F28 !important;
+}
+h3 {
+    font-size: 1.15rem !important;
+    font-weight: 600 !important;
+    color: #333D4B !important;
+}
+
+/* 알림 및 배너 */
+div[data-testid="stAlert"] {
+    border-radius: 10px;
+    border: none;
+}
+</style>
+""", unsafe_allow_html=True)
+
 def render_top_header(title_text):
     col_t, col_l = st.columns([11, 1])
     with col_t:
@@ -1200,17 +1532,26 @@ def render_admin_edit_toolbar():
 
 with st.sidebar:
     s_title = get_ui_text("sidebar_title", "💼 구매 업무 보조")
-    st.markdown(f"## {s_title}")
+    st.markdown(f"### {s_title}")
     
-    # 예약된 이동 타겟이 있으면 radio 생성 전에 반영
-    if "nav_target" in st.session_state:
-        st.session_state["main_menu"] = st.session_state.pop("nav_target")
-        
     m_ext = get_ui_text("menu_extractor", "💰 구매추출기")
-    m_con = get_ui_text("menu_contract", "🤝 구매계약관리")
-    base_menus = [m_ext, m_con]
+    m_con = get_ui_text("menu_contract", "🤝 구매계약분석")
+    m_his = get_ui_text("menu_history", "🕒 분석내역 불러오기")
+    base_menus = [m_ext, m_con, m_his]
     if st.session_state.get("is_admin_auth", False):
         base_menus.append("⚙️ 관리자 설정")
+
+    # 예약된 이동 타겟이 있으면 radio 생성 전에 반영
+    if "nav_target" in st.session_state:
+        target = st.session_state.pop("nav_target")
+        if target in ["💰 구매추출기", "구매추출기", m_ext]:
+            st.session_state["main_menu"] = m_ext
+        elif target in ["🤝 구매계약관리", "🤝 구매계약분석", "구매계약분석", m_con]:
+            st.session_state["main_menu"] = m_con
+        elif target in ["🕒 분석내용 불러오기", "🕒 분석내역 불러오기", "분석내역 불러오기", m_his]:
+            st.session_state["main_menu"] = m_his
+        elif target == "⚙️ 관리자 설정":
+            st.session_state["main_menu"] = "⚙️ 관리자 설정"
         
     current_menu_choice = st.session_state.get("main_menu", m_ext)
     if current_menu_choice not in base_menus:
@@ -1220,28 +1561,23 @@ with st.sidebar:
     menu = st.radio(
         "메뉴 선택", 
         base_menus, 
-        key="main_menu"
+        key="main_menu",
+        label_visibility="collapsed"
     )
     st.divider()
-    
-    # 💡 과거 작업내역 불러오기는 평소엔 닫혀있는 아코디언으로 보관 (화면 복잡도 최소화)
-    with st.expander("🕒 과거 분석내역 불러오기 (보관함)", expanded=False):
-        if st.checkbox("보관함 대시보드 열기", key="open_history_db"):
-            menu = "🕒 분석내용 불러오기"
             
     if st.session_state.get("is_admin_auth", False):
-        st.caption("🔓 관리자 모드 활성화됨")
+        st.caption("🔓 관리자 모드")
         if st.button("🔒 관리자 로그아웃", key="btn_side_logout", use_container_width=True):
             st.session_state["is_admin_auth"] = False
             st.session_state["nav_target"] = m_ext
             st.rerun()
-    else:
-        st.caption("✅ 구매 보조 툴 가동 중")
 
 # ----------------- [1. 구매요청 분석] -----------------
 m_ext = get_ui_text("menu_extractor", "💰 구매추출기")
-m_con = get_ui_text("menu_contract", "🤝 구매계약관리")
-if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
+m_con = get_ui_text("menu_contract", "🤝 구매계약분석")
+m_his = get_ui_text("menu_history", "🕒 분석내역 불러오기")
+if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청 분석"]:
     ext_t = get_ui_text("ext_main_title", "💰 구매추출기")
     render_top_header(ext_t)
     render_admin_edit_toolbar()
@@ -1337,6 +1673,8 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
         st.session_state["is_saved"] = False
         st.session_state['api_failed'] = False
         st.session_state['ai_errors'] = []
+        for k in ["req_in_ven", "req_in_biz", "req_in_rep", "req_in_phn", "req_in_eml", "req_acc_holder", "req_acc_num"]:
+            if k in st.session_state: del st.session_state[k]
         if 'show_reset_warning' in st.session_state: del st.session_state['show_reset_warning']
         for k in [SESSION_REQ_KEY, SESSION_AI_KEY]:
             if k in st.session_state: del st.session_state[k]
@@ -1589,7 +1927,7 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
                 if biz_check_list:
                     with st.spinner(f"🔍 국세청에 사업자 휴·폐업 상태를 실시간 다중 조회 중입니다... (총 {len(biz_check_list)}건)"):
                         for biz in biz_check_list:
-                            status = check_nts_business(biz['no'])
+                            status = check_nts_business(biz['no'], NTS_API_KEY)
                             nts_reports.append(f"{biz['name']}: {status}")
                             
                             if "휴업자" in status:
@@ -1845,7 +2183,7 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
         
         st.divider()
         st.write("#### ✍️ 결재 의견 (자동 생성)")
-        st.code(generate_opinion(req_type, con_type, total_amt, item_list, raw_fin), language="text")
+        st.code(generate_opinion(req_type, con_type, total_amt, item_list, raw_fin, raw_req), language="text")
         
         st.divider()
         
@@ -1865,12 +2203,16 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
                 if int_ph in ai_ph_clean or ai_ph_clean in int_ph:
                     ai_phone = ""; break
 
+        ai_email = ai.get('이메일', '') if ai else ''
+        if ai_email and (ai_email == "미검출" or is_internal_sejong_email(ai_email)):
+            ai_email = ""
+
         c_v1, c_v2, c_v3, c_v4, c_v5 = st.columns(5)
-        with c_v1: t_ven = st.text_input("업체명", value=ai.get('업체명', '') if ai else '')
-        with c_v2: t_biz = st.text_input("사업자번호", value=ai.get('사업자번호', '') if ai else '')
-        with c_v3: t_rep = st.text_input("업체담당자명", value=ai.get('담당자', '') if ai else '')
-        with c_v4: t_phn = st.text_input("연락처", value=ai_phone) 
-        with c_v5: t_eml = st.text_input("이메일", value=ai.get('이메일', '') if ai else '')
+        with c_v1: t_ven = st.text_input("업체명", value=ai.get('업체명', '') if ai else '', key="req_in_ven")
+        with c_v2: t_biz = st.text_input("사업자번호", value=ai.get('사업자번호', '') if ai else '', key="req_in_biz")
+        with c_v3: t_rep = st.text_input("업체담당자명", value=ai.get('담당자', '') if ai else '', key="req_in_rep")
+        with c_v4: t_phn = st.text_input("연락처", value=ai_phone, key="req_in_phn") 
+        with c_v5: t_eml = st.text_input("이메일", value=ai_email, key="req_in_eml")
         
         st.caption("✨ **원클릭 복사 보드**")
         c_cp1, c_cp2, c_cp3 = st.columns([1, 1, 2])
@@ -1915,8 +2257,19 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
                     item_remarks.append(f"{itm['name']}: {rem}" if len(item_list) > 1 else rem)
             final_remarks = " / ".join(item_remarks) if item_remarks else ""
             
+            # 💡 [Part 1 - 3번] 수기 수정된 최종 업체/계좌 정보를 ai_res에도 동기화하여 저장!
+            saved_ai = dict(ai) if ai else {}
+            saved_ai["업체명"] = t_ven
+            saved_ai["사업자번호"] = t_biz
+            saved_ai["담당자"] = t_rep
+            saved_ai["연락처"] = t_phn
+            saved_ai["이메일"] = t_eml
+            saved_ai["예금주"] = t_acc_holder
+            saved_ai["계좌번호"] = t_acc_num
+            st.session_state[SESSION_AI_KEY] = saved_ai
+
             raw_to_save = {
-                "req_input": raw_req, "fin_input": raw_fin, "itm_input": raw_itm, "ai_res": ai, "req_type": req_type, "con_type": con_type,
+                "req_input": raw_req, "fin_input": raw_fin, "itm_input": raw_itm, "ai_res": saved_ai, "req_type": req_type, "con_type": con_type,
                 "item_list": item_list, "remarks": final_remarks
             }
             
@@ -1945,8 +2298,8 @@ if menu in [m_ext, "💰 구매추출기", "📋 구매요청 분석"]:
             st.success(f"✅ 구매요구번호 [{base_data['req_no']}] 건의 핵심 데이터가 로컬 및 구글 시트에 안전하게 저장되었습니다! '분석내용 불러오기' 메뉴에서 확인 가능합니다.")
 
 # ----------------- [2. 구매계약 분석 및 발주서 자동 생성] -----------------
-elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
-    con_main_t = get_ui_text("con_main_title", "🤝 구매계약관리")
+elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구매계약관리", "구매계약관리", "🤝 구매계약 분석"]:
+    con_main_t = get_ui_text("con_main_title", "🤝 구매계약분석")
     render_top_header(con_main_t)
     render_admin_edit_toolbar()
     
@@ -2008,7 +2361,80 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
             memo_txt = raw_memos[idx] if idx < len(raw_memos) else ""
             if txt.strip() or memo_txt.strip(): 
                 cd = extract_contract_info(txt)
-                # 별도 메모창에 입력된 내용이 있으면 우선 적용
+
+                # -------------------------------------------------------------
+                # 💡 [Part 2 - 제안 1] 구매요구번호 기준 캐시(DB) 자동 조회 및 프리필
+                # -------------------------------------------------------------
+                req_no = str(cd.get('req_no', '')).strip()
+                cached_data = load_from_cache(req_no) if req_no else None
+                
+                cached_meta = {}
+                if req_no and os.path.exists(CACHE_FILE):
+                    try:
+                        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                            local_db = json.load(f)
+                            if req_no in local_db:
+                                cached_meta = local_db[req_no].get("meta", {})
+                    except Exception:
+                        pass
+
+                if cached_data or cached_meta:
+                    cd['from_cache'] = True
+                    ai_c = cached_data.get("ai_res", {}) if cached_data else {}
+                    
+                    # 1) 업체담당자 정보 연동
+                    c_vrep = ai_c.get("담당자") or ""
+                    c_vph = ai_c.get("연락처") or ""
+                    c_vem = ai_c.get("이메일") or ""
+                    if not (c_vrep or c_vph or c_vem) and cached_meta.get("업체담당자정보"):
+                        v_parts = [p.strip() for p in str(cached_meta["업체담당자정보"]).split("/")]
+                        if len(v_parts) >= 1: c_vrep = v_parts[0]
+                        if len(v_parts) >= 2: c_vph = v_parts[1]
+                        if len(v_parts) >= 3: c_vem = v_parts[2]
+
+                    # 2) 실사용자 정보 (물품담당자 또는 연구책임자)
+                    c_unm, c_uph, c_uem = "", "", ""
+                    c_mgr_str = cached_meta.get("물품담당자", "")
+                    if c_mgr_str and "미기재" not in c_mgr_str and "없음" not in c_mgr_str:
+                        u_parts = [p.strip() for p in str(c_mgr_str).split("/")]
+                        if len(u_parts) >= 1: c_unm = u_parts[0]
+                        if len(u_parts) >= 2:
+                            if "@" in u_parts[1]: c_uem = u_parts[1]
+                            else: c_uph = u_parts[1]
+                        if len(u_parts) >= 3:
+                            if "@" in u_parts[2]: c_uem = u_parts[2]
+                            else: c_uph = u_parts[2]
+
+                    # 실사용자 연락처/이메일 부재 시 USER_DB 조회
+                    if c_unm and (not c_uph or not c_uem):
+                        u_lookup = lookup_user_contact(c_unm)
+                        if u_lookup:
+                            if not c_uph: c_uph = u_lookup.get("phone", "")
+                            if not c_uem: c_uem = u_lookup.get("email", "")
+
+                    # 3) 비고사항
+                    c_rem = cached_meta.get("비고사항") or (cached_data.get("remarks") if cached_data else "")
+                    cd['cached_remarks'] = c_rem
+
+                    # 스마트 메모에 반영 (단, 사용자가 노션 메모 직접 입력하지 않은 경우에만 프리필)
+                    if not cd['smart_memo'].get('vendor_rep') and c_vrep:
+                        cd['smart_memo']['vendor_rep'] = c_vrep
+                    if not cd['smart_memo'].get('vendor_phone') and c_vph:
+                        cd['smart_memo']['vendor_phone'] = c_vph
+                    if not cd['smart_memo'].get('vendor_email') and c_vem:
+                        cd['smart_memo']['vendor_email'] = c_vem
+
+                    if not cd['smart_memo'].get('user_name') and c_unm:
+                        cd['smart_memo']['user_name'] = c_unm
+                    if not cd['smart_memo'].get('user_phone') and c_uph:
+                        cd['smart_memo']['user_phone'] = c_uph
+                    if not cd['smart_memo'].get('user_email') and c_uem:
+                        cd['smart_memo']['user_email'] = c_uem
+
+                    if not cd.get('vendor_name') and cached_meta.get("업체명"):
+                        cd['vendor_name'] = cached_meta.get("업체명")
+
+                # 별도 메모창에 입력된 내용이 있으면 최우선 적용 (덮어쓰기)
                 if memo_txt.strip():
                     memo_info = parse_smart_contact_memo(memo_txt)
                     if 'smart_memo' not in cd: cd['smart_memo'] = {}
@@ -2022,13 +2448,21 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
             # 세션 스테이트에 스마트 파서 값 세팅
             for i, cd in enumerate(valid_data):
                 sm = cd.get('smart_memo', {})
+                u_em_c = sm.get('user_email', cd.get('email', ''))
+                v_em_c = sm.get('vendor_email', '')
+                
+                # 💡 [핵심] 세종대/USER_DB 이메일은 업체 메일로 들어가지 못하도록 방어
+                if is_internal_sejong_email(v_em_c):
+                    if not u_em_c:
+                        u_em_c = v_em_c
+                    v_em_c = ''
+
                 st.session_state[f"u_nm_{i}"] = sm.get('user_name', '')
                 st.session_state[f"u_ph_{i}"] = sm.get('user_phone', '')
-                st.session_state[f"u_em_{i}"] = sm.get('user_email', cd.get('email', ''))
+                st.session_state[f"u_em_{i}"] = u_em_c
                 st.session_state[f"v_rep_{i}"] = sm.get('vendor_rep', '')
                 st.session_state[f"v_ph_{i}"] = sm.get('vendor_phone', '')
-                # 업체담당자 이메일은 부재 시 무조건 공란("") 유지
-                st.session_state[f"v_em_{i}"] = sm.get('vendor_email', '')
+                st.session_state[f"v_em_{i}"] = v_em_c
         else:
             st.warning("입력된 텍스트가 없습니다. 먼저 텍스트를 붙여넣어주세요.")
 
@@ -2038,19 +2472,27 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
         
         for i, cd in enumerate(st.session_state['multi_con_data']):
             with st.expander(f"📌 [계약 {i+1}] {cd.get('con_name', '건명 미상')}", expanded=True):
+                if cd.get('from_cache'):
+                    st.success(f"✨ **[구매추출기 DB 연동 완료]** 구매요구번호 `[{cd.get('req_no')}]`의 분석 데이터(업체담당자, 실사용자)를 자동으로 불러왔습니다.")
+                    if cd.get('cached_remarks'):
+                        st.info(f"💡 **[구매요청 시 비고사항]** {cd.get('cached_remarks')}")
                 
                 # 💡 노션 비고란 실시간 즉시 반영 도구
                 with st.expander("⚡ 노션 비고란 메모 즉시 붙여넣기 (실사용자/업체 자동 배분)", expanded=False):
                     quick_memo = st.text_area("노션 비고란 텍스트를 붙여넣고 [적용]을 누르세요", key=f"qmemo_{i}", placeholder="실사용자: 정영권 교수 01033246327 ykjung@sejong.ac.kr\n업체담당자: 김철수 01099998888 cs@vendor.com", height=70)
                     if st.button("✨ 폼에 즉시 반영", key=f"btn_apply_qmemo_{i}"):
                         parsed = parse_smart_contact_memo(quick_memo)
+                        q_u_em = parsed.get('user_email', '')
+                        q_v_em = parsed.get('vendor_email', '')
+                        if is_internal_sejong_email(q_v_em):
+                            if not q_u_em: q_u_em = q_v_em
+                            q_v_em = ''
                         if parsed['user_name']: st.session_state[f"u_nm_{i}"] = parsed['user_name']
                         if parsed['user_phone']: st.session_state[f"u_ph_{i}"] = parsed['user_phone']
-                        if parsed['user_email']: st.session_state[f"u_em_{i}"] = parsed['user_email']
+                        if q_u_em: st.session_state[f"u_em_{i}"] = q_u_em
                         if parsed['vendor_rep']: st.session_state[f"v_rep_{i}"] = parsed['vendor_rep']
                         if parsed['vendor_phone']: st.session_state[f"v_ph_{i}"] = parsed['vendor_phone']
-                        # 업체 이메일 없으면 공란으로 갱신
-                        st.session_state[f"v_em_{i}"] = parsed.get('vendor_email', '')
+                        st.session_state[f"v_em_{i}"] = q_v_em
                         st.rerun()
 
                 # 💡 사업 구분 (신임교원지원사업 vs 일반 중앙구매) 자동 선택 및 수동 변경
@@ -2070,11 +2512,13 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
                 with c2: e_amt = st.text_input("계약금액 (숫자만)", value=cd.get('con_amount', '0'), key=f"e_amt_{i}")
                 with c3: e_ven = st.text_input("협력사 (업체명)", value=cd.get('vendor_name', ''), key=f"e_ven_{i}")
 
-                c4, c5 = st.columns(2)
+                c4, c5, c6 = st.columns([1.2, 1, 1.5])
                 with c4:
+                    e_req = st.text_input("구매요구번호", value=cd.get('req_no', ''), key=f"e_req_{i}", placeholder="예: 202603120005")
+                with c5:
                     delivery_options = ["납품장소도", "현장설치도", "용역", "공사", "기타"]
                     e_deliv = st.selectbox("납품방법", delivery_options, key=f"e_del_{i}")
-                with c5:
+                with c6:
                     e_loc = st.text_input("납품장소", value=cd.get('location', ''), key=f"e_loc_{i}")
 
                 sm_data = cd.get('smart_memo', {})
@@ -2155,18 +2599,20 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
                     else:
                         try:
                             is_new_fac = "신임교원" in sel_ptype
-                            new_fac_tpl = "template_new_faculty.docx"
+                            new_fac_tpl = get_template_path(["template_new_faculty.docx", "신임교원용_발주서(eformsign 템플릿)_대학_국가계약법_1천만원 미만.docx"])
 
-                            if is_new_fac and os.path.exists(new_fac_tpl):
+                            if is_new_fac and new_fac_tpl:
                                 tpl_name = new_fac_tpl
                             else:
-                                tpl_name = "template_over10mil.docx" if amt_val >= 10000000 else "template_under10mil.docx"
-                                if is_new_fac and not os.path.exists(new_fac_tpl):
-                                    st.warning(f"⚠️ 신임교원지원사업 전용 양식('{new_fac_tpl}')이 아직 없어 기본 서식({tpl_name})으로 생성되었습니다. 프로젝트 폴더에 {new_fac_tpl}을 추가하시면 자동으로 적용됩니다.")
+                                tpl_default = "template_over10mil.docx" if amt_val >= 10000000 else "template_under10mil.docx"
+                                tpl_name = get_template_path(tpl_default) or tpl_default
+                                if is_new_fac and not new_fac_tpl:
+                                    st.warning(f"⚠️ 신임교원지원사업 전용 양식('template_new_faculty.docx')이 아직 없어 기본 서식({tpl_default})으로 생성되었습니다.")
 
                             doc = DocxTemplate(tpl_name)
                             
                             final_deposit_str = f"{calc_deposit:,}" if calc_deposit > 0 else ""
+                            clean_user_for_doc = re.sub(r'\s*교수\s*$', '', u_nm).strip() if is_new_fac else u_nm
                             context = {
                                 "구매담당자": b_nm, 
                                 "구매담당자_연락처": b_ph, 
@@ -2175,34 +2621,69 @@ elif menu in [m_con, "🤝 구매계약관리", "🤝 구매계약 분석"]:
                                 "계약금액": f"{amt_val:,}", 
                                 "납품방법": e_deliv, 
                                 "납품장소": e_loc,
-                                "실사용자": u_nm, 
+                                "실사용자": clean_user_for_doc, 
                                 "실사용자_연락처": u_ph, 
                                 "실사용자_메일": u_em,
                                 "협력사": e_ven,
                                 "검수담당자": i_nm, 
                                 "검수담당자_연락처": INSPECTOR_INFO.get("phone", "02-3408-4058"), 
                                 "검수담당자_메일": INSPECTOR_INFO.get("email", "rudwpdyd@sejong.ac.kr"),
-                                "계약보증금액": final_deposit_str
+                                "계약보증금액": final_deposit_str,
+                                "구매요구번호": e_req
                             }
                             doc.render(context)
                             ts = BytesIO()
                             doc.save(ts)
                             ts.seek(0)
 
+                            clean_req = re.sub(r'[\\/*?:"<>|]', '', str(e_req).strip())
+                            if clean_req:
+                                target_fname = f"발주서 - {clean_req}.docx"
+                            else:
+                                target_fname = f"발주서 - {e_name}.docx" if e_name else f"발주서_{e_ven}.docx"
+
+                            st.session_state[f"last_gen_docx_{i}"] = {
+                                "bytes": ts.getvalue(),
+                                "name": target_fname
+                            }
                             st.success(f"✅ {i+1}번 발주서 생성 완료!")
-                            st.download_button(
-                                label=disp_dl_t,
-                                data=ts,
-                                file_name=f"발주요청서_{e_ven}_{e_name}.docx",
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                key=f"btn_dl_{i}"
-                            )
                         except Exception as e:
                             st.error(f"🚨 워드 파일 생성 중 오류 발생: {e}")
 
+                if f"last_gen_docx_{i}" in st.session_state:
+                    saved_docx = st.session_state[f"last_gen_docx_{i}"]
+                    c_dl, c_ef = st.columns([1, 1])
+                    with c_dl:
+                        st.download_button(
+                            label=disp_dl_t,
+                            data=saved_docx["bytes"],
+                            file_name=saved_docx["name"],
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            key=f"btn_dl_{i}"
+                        )
+                    with c_ef:
+                        if st.button(f"✍️ [{i+1}번] 이폼싸인(eformsign) 바로 실행", key=f"btn_eform_{i}", help="워드 문서를 열고 eformsign 모듈 버튼을 자동으로 실행합니다."):
+                            out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "output")
+                            os.makedirs(out_dir, exist_ok=True)
+                            safe_name = re.sub(r'[\\/*?:"<>|]', '_', saved_docx["name"])
+                            out_path = os.path.join(out_dir, safe_name)
+                            with open(out_path, "wb") as f_out:
+                                f_out.write(saved_docx["bytes"])
+                            
+                            with st.spinner("⏳ 워드를 실행하고 이폼싸인 모듈을 호출하는 중입니다..."):
+                                try:
+                                    from local_tools.eformsign_trigger import trigger_eformsign_in_word
+                                    ok = trigger_eformsign_in_word(out_path, "실행")
+                                    if ok:
+                                        st.success("🎉 이폼싸인 모듈이 성공적으로 호출되었습니다! 워드 창에서 전자결재를 계속 진행해 주세요.")
+                                    else:
+                                        st.error("🚨 이폼싸인 모듈 호출 실패: 워드가 정상 실행되었는지 확인해주세요.")
+                                except Exception as err:
+                                    st.error(f"🚨 이폼싸인 실행 에러: {err}")
+
 # ----------------- [3. 분석내용 불러오기] -----------------
-elif menu == "🕒 분석내용 불러오기":
-    render_top_header("🕒 과거 작업 내역 대시보드")
+elif menu in [m_his, "🕒 분석내역 불러오기", "분석내역 불러오기", "🕒 분석내용 불러오기", "분석내용 불러오기"]:
+    render_top_header("🕒 분석내역 불러오기")
     st.info("이전에 작업하고 저장해둔 분석 내역을 엑셀 대장처럼 확인하고, 언제든 다시 불러와서 이어서 작업할 수 있습니다.")
     
     cache_list = get_cache_list()
@@ -2279,7 +2760,17 @@ elif menu == "🕒 분석내용 불러오기":
                 st.session_state["p_req"] = raw_r
                 st.session_state["p_fin"] = raw_f
                 st.session_state["p_itm"] = raw_i
-                st.session_state[SESSION_AI_KEY] = loaded_data.get("ai_res", {})
+                ai_data = loaded_data.get("ai_res", {})
+                st.session_state[SESSION_AI_KEY] = ai_data
+                
+                # 수기 수정했던 업체/계좌 입력창 상태 복구
+                st.session_state["req_in_ven"] = ai_data.get("업체명", "")
+                st.session_state["req_in_biz"] = ai_data.get("사업자번호", "")
+                st.session_state["req_in_rep"] = ai_data.get("담당자", "")
+                st.session_state["req_in_phn"] = ai_data.get("연락처", "")
+                st.session_state["req_in_eml"] = ai_data.get("이메일", "")
+                st.session_state["req_acc_holder"] = ai_data.get("예금주", "")
+                st.session_state["req_acc_num"] = ai_data.get("계좌번호", "")
                 
                 saved_req = loaded_data.get("req_type")
                 if not saved_req:
@@ -2322,6 +2813,21 @@ elif menu == "🕒 분석내용 불러오기":
         if "load_msg" in st.session_state:
             st.error(st.session_state["load_msg"])
             del st.session_state["load_msg"]
+
+        st.divider()
+        with st.expander("🗑️ 과거 내역 영구 삭제 (로컬 & 구글 시트 동시 삭제)", expanded=False):
+            st.caption("선택한 구매요구번호의 내역을 로컬 캐시와 구글 시트 양쪽에서 완전히 삭제합니다.")
+            del_targets = [f"{item['구매요구번호']} | {item.get('업체명', '업체미상')} | {item.get('구매요청액', '0')}원" for item in cache_list]
+            sel_del_target = st.selectbox("삭제할 내역 선택", del_targets, key="sel_del_target")
+            
+            c_d1, c_d2 = st.columns([2, 1])
+            with c_d2:
+                if st.button("🚨 선택 내역 영구 삭제", type="primary", key="btn_delete_cache", width="stretch"):
+                    target_req = sel_del_target.split(" | ")[0].strip()
+                    delete_from_cache(target_req)
+                    st.success(f"✅ [{target_req}] 건이 로컬 캐시 및 구글 시트에서 삭제되었습니다!")
+                    time.sleep(1)
+                    st.rerun()
 
 # ----------------- [4. 관리자 설정 화면] -----------------
 elif menu == "⚙️ 관리자 설정":

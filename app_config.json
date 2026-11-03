@@ -2,7 +2,7 @@
   "app_title": "구매 업무 보조",
   "sidebar_title": "💼 구매 업무 보조",
   "menu_extractor": "💰 구매추출기",
-  "menu_contract": "🤝 구매계약관리",
+  "menu_contract": "🤝 구매계약분석",
   "admin_pin": "1234",
   "ext_main_title": "💰 구매추출기",
   "ext_step1_title": "📥 정보 입력 및 서류 업로드",
@@ -14,7 +14,7 @@
   "ext_erp_basic_title": "📝 ERP 기본 정보",
   "ext_erp_items_title": "📦 ERP 품목 내역",
   "ext_bank_title": "🏦 통장사본 계좌정보",
-  "con_main_title": "🤝 구매계약관리",
+  "con_main_title": "🤝 구매계약분석",
   "con_desc": "여러 개의 계약 건을 한 번에 입력하고 분석하여, 각각의 워드 발주서를 빠르게 생성할 수 있습니다.",
   "con_card_title": "📄 [계약 {no}] 데이터 입력",
   "btn_load_contract": "계약 데이터 불러오기",
@@ -36,5 +36,36 @@
     "name": "경제용",
     "phone": "02-3408-4058",
     "email": "rudwpdyd@sejong.ac.kr"
-  }
+  },
+  "special_projects": {
+    "박재우": {
+      "kw": [
+        "지역혁신중심",
+        "RISE",
+        "라이즈"
+      ],
+      "suffix": "(RISE사업단)"
+    },
+    "김재호": {
+      "kw": [
+        "사물인터넷"
+      ],
+      "suffix": "(사물인터넷혁신융합대학사업단)"
+    },
+    "송오영": {
+      "kw": [
+        "SW중심대학"
+      ],
+      "suffix": "(SW중심대학사업단)"
+    },
+    "이기학": {
+      "kw": [
+        "G-LAMP",
+        "GLAMP",
+        "대학기초연구소"
+      ],
+      "suffix": "(G-LAMP사업단)"
+    }
+  },
+  "menu_history": "🕒 분석내역 불러오기"
 }

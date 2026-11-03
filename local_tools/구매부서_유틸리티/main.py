@@ -25,6 +25,7 @@ import tempfile
 import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import customtkinter as ctk
 from PIL import Image, ImageOps, ImageDraw
 import pypdfium2 as pdfium
 
@@ -33,10 +34,10 @@ try:
 except ImportError:
     windnd = None
 
-APP_TITLE = "구매부서 유틸리티 (파일명 복구 & PDF 종합 도구)"
+APP_TITLE = "구매부서 유틸리티"
 REG_SHELL_NAME = "PurchasingDeptUtility"
-MENU_LABEL = "[구매부서 유틸리티] 한글 파일명 복구"
-MENU_BG_LABEL = "[구매부서 유틸리티] 폴더 내 한글 파일명 전체 복구"
+MENU_LABEL = "[구매부서 유틸리티] 파일명 복구"
+MENU_BG_LABEL = "[구매부서 유틸리티] 폴더 파일명 복구"
 
 # 지원 확장자 상수
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif', '.tiff'}
@@ -886,686 +887,743 @@ def show_auto_alert(title: str, message: str, auto_close_sec: int = 3):
 # =========================================================================
 
 def launch_main_gui():
-    root = tk.Tk()
-    root.title(APP_TITLE)
-    root.geometry("740x680")
-    root.minsize(680, 600)
-    root.configure(bg="#F4F6F9")
+    ctk.set_appearance_mode("light")
+    ctk.set_default_color_theme("blue")
 
-    style = ttk.Style()
-    style.theme_use("clam")
-    style.configure("TButton", font=("Malgun Gothic", 10), padding=6)
-    style.configure("TNotebook", background="#F4F6F9")
-    style.configure("TNotebook.Tab", font=("Malgun Gothic", 10, "bold"), padding=[20, 8])
+    class ModernPurchasingUtility(ctk.CTk):
+        def __init__(self):
+            super().__init__()
+            self.title(APP_TITLE)
+            self.geometry("900x700")
+            self.minsize(820, 620)
+            self.configure(fg_color="#F8F9FA")
 
-    # 1. 상단 공통 헤더
-    header = tk.Frame(root, bg="#004797", padx=20, pady=14)
-    header.pack(fill=tk.X)
+            self.current_mode = "conv"
 
-    lbl_title = tk.Label(
-        header,
-        text="💼 구매부서 유틸리티",
-        font=("Malgun Gothic", 13, "bold"),
-        fg="white",
-        bg="#004797"
-    )
-    lbl_title.pack(anchor="w")
+            # 작업 옵션 변수
+            self.img_merge_var = ctk.BooleanVar(value=False)
+            self.excel_fit_var = ctk.StringVar(value="너비 1페이지")
+            self.pdf_sort_var = ctk.BooleanVar(value=True)
+            self.split_range_var = ctk.StringVar(value="")
+            self.compress_level_var = ctk.StringVar(value="보통 (150 DPI)")
+            self.rotate_angle_var = ctk.StringVar(value="90° ↻")
 
-    # 공통 로그 출력 함수
-    def log(msg):
-        txt_log.config(state=tk.NORMAL)
-        txt_log.insert(tk.END, msg + "\n")
-        txt_log.see(tk.END)
-        txt_log.config(state=tk.DISABLED)
+            # 2열 그리드 레이아웃
+            self.grid_columnconfigure(0, weight=0, minsize=220)
+            self.grid_columnconfigure(1, weight=1)
+            self.grid_rowconfigure(0, weight=1)
 
-    # 2. 탭 컨테이너 (Notebook)
-    notebook = ttk.Notebook(root)
-    notebook.pack(fill=tk.BOTH, expand=False, padx=15, pady=(10, 5))
+            self._build_sidebar()
+            self._build_content_area()
 
-    tab_fixer = tk.Frame(notebook, bg="#F4F6F9", padx=10, pady=10)
-    tab_pdf = tk.Frame(notebook, bg="#F4F6F9", padx=10, pady=10)
-
-    # 첫 화면을 PDF 종합 도구로 배치하고, 파일명 복구를 뒤 탭으로 배치
-    notebook.add(tab_pdf, text="  📑 PDF 도구  ")
-    notebook.add(tab_fixer, text="  🛠️ 파일명 복구  ")
-    notebook.select(tab_pdf)
-
-    # ---------------------------------------------------------------------
-    # [탭 1] 맥북 한글 파일명 복구 탭 내용
-    # ---------------------------------------------------------------------
-    def handle_fixer_items(item_list, source_label="선택"):
-        all_res = []
-        for item in item_list:
-            if isinstance(item, bytes):
+            # 창 전체 드래그 앤 드롭 연결
+            if windnd:
                 try:
-                    item = item.decode('utf-8')
-                except Exception:
-                    item = item.decode('mbcs', errors='ignore')
-            if os.path.exists(item):
-                res = process_path(item)
-                all_res.extend(res)
+                    windnd.hook_dropfiles(self, func=self._on_drop_files, force_unicode=True)
+                except Exception as e:
+                    self.log(f"⚠️ 드래그 앤 드롭 오류: {e}")
 
-        if all_res:
-            log(f"✅ [파일명 복구: {source_label}] 총 {len(all_res)}개 항목 복구 완료:")
-            for old_n, new_n in all_res:
-                log(f"   • {old_n}  ->  {new_n}")
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-            messagebox.showinfo("복구 완료", f"총 {len(all_res)}개 파일/폴더명이 정상 복구되었습니다!")
-        else:
-            log(f"✨ [파일명 복구: {source_label}] 선택하신 항목의 한글 이름이 이미 모두 정상입니다.")
-            winsound.MessageBeep(winsound.MB_ICONINFORMATION)
-            messagebox.showinfo("확인", "깨진 한글 파일명이 없거나 이미 정상입니다.")
+            self.log("구매부서 유틸리티 준비 완료")
 
-    drop_frame_fixer = tk.Frame(tab_fixer, bg="#EBF3FB", bd=2, relief=tk.GROOVE, padx=20, pady=16)
-    drop_frame_fixer.pack(fill=tk.X, pady=(4, 6))
+        def _build_sidebar(self):
+            self.sidebar = ctk.CTkFrame(
+                self,
+                fg_color="#FFFFFF",
+                corner_radius=0,
+                border_width=1,
+                border_color="#E9ECEF"
+            )
+            self.sidebar.grid(row=0, column=0, sticky="nsew")
 
-    lbl_drop_icon1 = tk.Label(drop_frame_fixer, text="📥", font=("Segoe UI Emoji", 20), bg="#EBF3FB")
-    lbl_drop_icon1.pack()
+            # 앱 브랜드 헤더 (간결하게 "구매부서 유틸리티"만)
+            brand_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+            brand_frame.pack(fill="x", padx=18, pady=(20, 14))
 
-    lbl_drop_title1 = tk.Label(
-        drop_frame_fixer,
-        text="파일 또는 폴더를 여기에 끌어다 놓으세요",
-        font=("Malgun Gothic", 10, "bold"),
-        fg="#004797",
-        bg="#EBF3FB"
-    )
-    lbl_drop_title1.pack(pady=(3, 0))
+            lbl_logo = ctk.CTkLabel(
+                brand_frame,
+                text="구매부서 유틸리티",
+                font=("Segoe UI", 16, "bold"),
+                text_color="#191F28"
+            )
+            lbl_logo.pack(anchor="w")
 
-    # 폴더/파일 수동 선택 버튼
-    btn_frame_fixer = tk.Frame(tab_fixer, bg="#F4F6F9")
-    btn_frame_fixer.pack(fill=tk.X, pady=(4, 6))
+            # 섹션 1: PDF 도구
+            lbl_sec1 = ctk.CTkLabel(
+                self.sidebar,
+                text="PDF 도구",
+                font=("Segoe UI", 11, "bold"),
+                text_color="#8B95A1"
+            )
+            lbl_sec1.pack(anchor="w", padx=18, pady=(8, 4))
 
-    def on_pick_folder():
-        folder = filedialog.askdirectory(title="복구할 폴더를 선택하세요")
-        if folder:
-            handle_fixer_items([folder], "폴더 검사")
+            self.nav_buttons = {}
+            modes = [
+                ("conv", "📷  사진·문서 변환"),
+                ("merge", "📑  PDF 병합"),
+                ("split", "✂️  페이지 분할·추출"),
+                ("compress", "📉  용량 압축"),
+                ("rotate", "🔄  방향 회전"),
+            ]
 
-    def on_pick_files():
-        files = filedialog.askopenfilenames(title="복구할 파일들을 선택하세요")
-        if files:
-            handle_fixer_items(files, "파일 검사")
+            for key, label in modes:
+                btn = ctk.CTkButton(
+                    self.sidebar,
+                    text=label,
+                    font=("Segoe UI", 12),
+                    height=36,
+                    corner_radius=8,
+                    anchor="w",
+                    fg_color="transparent",
+                    text_color="#4E5968",
+                    hover_color="#F2F4F6",
+                    command=lambda k=key: self.set_mode(k)
+                )
+                btn.pack(fill="x", padx=10, pady=2)
+                self.nav_buttons[key] = btn
 
-    btn_folder = tk.Button(
-        btn_frame_fixer,
-        text="📁 폴더 선택 복구",
-        font=("Malgun Gothic", 9, "bold"),
-        bg="#004797",
-        fg="white",
-        activebackground="#003366",
-        activeforeground="white",
-        padx=10,
-        pady=6,
-        relief=tk.FLAT,
-        cursor="hand2",
-        command=on_pick_folder
-    )
-    btn_folder.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+            # 섹션 2: 파일명 복구
+            lbl_sec2 = ctk.CTkLabel(
+                self.sidebar,
+                text="파일명 복구",
+                font=("Segoe UI", 11, "bold"),
+                text_color="#8B95A1"
+            )
+            lbl_sec2.pack(anchor="w", padx=18, pady=(12, 4))
 
-    btn_files = tk.Button(
-        btn_frame_fixer,
-        text="📄 개별 파일 선택 복구",
-        font=("Malgun Gothic", 9, "bold"),
-        bg="#2B5B84",
-        fg="white",
-        activebackground="#1E3E5C",
-        activeforeground="white",
-        padx=10,
-        pady=6,
-        relief=tk.FLAT,
-        cursor="hand2",
-        command=on_pick_files
-    )
-    btn_files.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+            btn_fixer = ctk.CTkButton(
+                self.sidebar,
+                text="🛠️  자소 분리 복구",
+                font=("Segoe UI", 12),
+                height=36,
+                corner_radius=8,
+                anchor="w",
+                fg_color="transparent",
+                text_color="#4E5968",
+                hover_color="#F2F4F6",
+                command=lambda: self.set_mode("fixer")
+            )
+            btn_fixer.pack(fill="x", padx=10, pady=2)
+            self.nav_buttons["fixer"] = btn_fixer
 
-    # 편의 기능
-    quick_frame = tk.LabelFrame(
-        tab_fixer,
-        text=" 원클릭 환경 설정 ",
-        font=("Malgun Gothic", 9, "bold"),
-        bg="#F4F6F9",
-        fg="#333",
-        padx=10,
-        pady=6
-    )
-    quick_frame.pack(fill=tk.X, pady=(2, 4))
+            # 하단 시스템 설정 카드
+            sys_frame = ctk.CTkFrame(self.sidebar, fg_color="#F8F9FA", corner_radius=10)
+            sys_frame.pack(side="bottom", fill="x", padx=10, pady=14)
 
-    qbtn_frame = tk.Frame(quick_frame, bg="#F4F6F9")
-    qbtn_frame.pack(fill=tk.X)
+            lbl_sys = ctk.CTkLabel(
+                sys_frame,
+                text="시스템 설정",
+                font=("Segoe UI", 11, "bold"),
+                text_color="#4E5968"
+            )
+            lbl_sys.pack(anchor="w", padx=10, pady=(8, 4))
 
-    def on_create_shortcut():
-        ok, msg = create_desktop_shortcut()
-        if ok:
-            log("📌 " + msg.split("\n")[0])
-            messagebox.showinfo("바탕화면 바로가기", msg)
-        else:
-            log("❌ " + msg)
-            messagebox.showerror("오류", msg)
+            btn_reg = ctk.CTkButton(
+                sys_frame,
+                text="우클릭 메뉴 등록",
+                font=("Segoe UI", 11),
+                height=28,
+                corner_radius=6,
+                fg_color="#FFFFFF",
+                text_color="#191F28",
+                hover_color="#E9ECEF",
+                border_width=1,
+                border_color="#E5E8EB",
+                command=self._on_register_menu
+            )
+            btn_reg.pack(fill="x", padx=8, pady=2)
 
-    def on_register():
-        ok, msg = register_context_menu()
-        if ok:
-            log("✨ " + msg)
-            messagebox.showinfo("우클릭 메뉴 등록", msg)
-        else:
-            log("❌ " + msg)
-            messagebox.showerror("오류", msg)
+            btn_unreg = ctk.CTkButton(
+                sys_frame,
+                text="우클릭 메뉴 삭제",
+                font=("Segoe UI", 11),
+                height=28,
+                corner_radius=6,
+                fg_color="#FFFFFF",
+                text_color="#6B7684",
+                hover_color="#E9ECEF",
+                border_width=1,
+                border_color="#E5E8EB",
+                command=self._on_unregister_menu
+            )
+            btn_unreg.pack(fill="x", padx=8, pady=2)
 
-    def on_unregister():
-        ok, msg = unregister_context_menu()
-        if ok:
-            log("🗑️ " + msg)
-            messagebox.showinfo("우클릭 메뉴 제거", msg)
-        else:
-            log("❌ " + msg)
-            messagebox.showerror("오류", msg)
+            btn_sc = ctk.CTkButton(
+                sys_frame,
+                text="바탕화면 바로가기",
+                font=("Segoe UI", 11),
+                height=28,
+                corner_radius=6,
+                fg_color="#FFFFFF",
+                text_color="#191F28",
+                hover_color="#E9ECEF",
+                border_width=1,
+                border_color="#E5E8EB",
+                command=self._on_create_shortcut
+            )
+            btn_sc.pack(fill="x", padx=8, pady=(2, 8))
 
-    btn_sc = tk.Button(
-        qbtn_frame,
-        text="📌 바탕화면 바로가기 생성",
-        font=("Malgun Gothic", 8, "bold"),
-        bg="#17A2B8",
-        fg="white",
-        relief=tk.FLAT,
-        cursor="hand2",
-        command=on_create_shortcut
-    )
-    btn_sc.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+        def _build_content_area(self):
+            self.main_content = ctk.CTkFrame(self, fg_color="#F8F9FA", corner_radius=0)
+            self.main_content.grid(row=0, column=1, sticky="nsew", padx=20, pady=16)
+            self.main_content.grid_columnconfigure(0, weight=1)
+            self.main_content.grid_rowconfigure(3, weight=1)
 
-    btn_reg = tk.Button(
-        qbtn_frame,
-        text="✨ 우클릭 메뉴 등록",
-        font=("Malgun Gothic", 8, "bold"),
-        bg="#28A745",
-        fg="white",
-        relief=tk.FLAT,
-        cursor="hand2",
-        command=on_register
-    )
-    btn_reg.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 3))
+            # 1. 헤더 (모드 제목 및 요약)
+            self.header_frame = ctk.CTkFrame(self.main_content, fg_color="transparent")
+            self.header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
-    btn_unreg = tk.Button(
-        qbtn_frame,
-        text="🗑️ 우클릭 메뉴 제거",
-        font=("Malgun Gothic", 8),
-        bg="#6C757D",
-        fg="white",
-        relief=tk.FLAT,
-        cursor="hand2",
-        command=on_unregister
-    )
-    btn_unreg.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
+            self.lbl_mode_title = ctk.CTkLabel(
+                self.header_frame,
+                text="사진·문서 변환",
+                font=("Segoe UI", 18, "bold"),
+                text_color="#191F28"
+            )
+            self.lbl_mode_title.pack(anchor="w")
 
-    # ---------------------------------------------------------------------
-    # [탭 2] PDF 만능 도구 탭 내용
-    # ---------------------------------------------------------------------
-    pdf_mode = tk.StringVar(value="conv")
-    img_merge_var = tk.BooleanVar(value=False)
-    excel_fit_var = tk.StringVar(value="width")
-    pdf_sort_var = tk.BooleanVar(value=True)
-    split_range_var = tk.StringVar(value="")
-    compress_level_var = tk.StringVar(value="normal")
-    rotate_angle_var = tk.IntVar(value=90)
+            self.lbl_mode_desc = ctk.CTkLabel(
+                self.header_frame,
+                text="이미지(JPG, PNG) 및 문서(Word, Excel, HWP) ➔ PDF 변환",
+                font=("Segoe UI", 12),
+                text_color="#6B7684"
+            )
+            self.lbl_mode_desc.pack(anchor="w", pady=(2, 0))
 
-    # 1) 작업 모드 선택 버튼 바
-    mode_frame = tk.Frame(tab_pdf, bg="#F4F6F9")
-    mode_frame.pack(fill=tk.X, pady=(0, 6))
+            # 2. 드롭존 카드
+            self.drop_card = ctk.CTkFrame(
+                self.main_content,
+                fg_color="#FFFFFF",
+                corner_radius=14,
+                border_width=1.5,
+                border_color="#E5E8EB"
+            )
+            self.drop_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
 
-    mode_buttons = {}
+            drop_inner = ctk.CTkFrame(self.drop_card, fg_color="transparent")
+            drop_inner.pack(fill="both", expand=True, padx=20, pady=20)
 
-    modes_def = [
-        ("conv", "📷 PDF 변환"),
-        ("merge", "📑 PDF 병합"),
-        ("split", "✂️ 페이지 분할"),
-        ("compress", "📉 용량 압축"),
-        ("rotate", "🔄 방향 회전"),
-    ]
+            self.lbl_drop_icon = ctk.CTkLabel(drop_inner, text="📷", font=("Segoe UI Emoji", 34))
+            self.lbl_drop_icon.pack(pady=(0, 2))
 
-    def update_pdf_ui():
-        m = pdf_mode.get()
-        for k, btn in mode_buttons.items():
-            if k == m:
-                btn.config(bg="#004797", fg="white", font=("Malgun Gothic", 9, "bold"))
+            self.lbl_drop_title = ctk.CTkLabel(
+                drop_inner,
+                text="변환할 파일을 여기에 놓으세요",
+                font=("Segoe UI", 14, "bold"),
+                text_color="#191F28"
+            )
+            self.lbl_drop_title.pack()
+
+            self.lbl_drop_sub = ctk.CTkLabel(
+                drop_inner,
+                text="드래그 앤 드롭 시 즉시 실행",
+                font=("Segoe UI", 11),
+                text_color="#8B95A1"
+            )
+            self.lbl_drop_sub.pack(pady=(2, 14))
+
+            # 작업 버튼 바
+            self.action_btn_frame = ctk.CTkFrame(drop_inner, fg_color="transparent")
+            self.action_btn_frame.pack()
+
+            self.btn_pick_primary = ctk.CTkButton(
+                self.action_btn_frame,
+                text="파일 선택",
+                font=("Segoe UI", 12, "bold"),
+                height=36,
+                corner_radius=18,
+                fg_color="#3182F6",
+                hover_color="#1B64DA",
+                command=self._on_pick_files
+            )
+            self.btn_pick_primary.pack(side="left", padx=4)
+
+            self.btn_pick_folder = ctk.CTkButton(
+                self.action_btn_frame,
+                text="폴더 선택",
+                font=("Segoe UI", 12, "bold"),
+                height=36,
+                corner_radius=18,
+                fg_color="#E8F3FF",
+                text_color="#1B64DA",
+                hover_color="#D4E8FC",
+                command=self._on_pick_folder
+            )
+
+            # 3. 옵션 카드
+            self.options_card = ctk.CTkFrame(
+                self.main_content,
+                fg_color="#FFFFFF",
+                corner_radius=12,
+                border_width=1,
+                border_color="#E5E8EB"
+            )
+            self.options_card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+
+            self._build_options()
+
+            # 4. 하단 콘솔 로그 카드
+            self.log_card = ctk.CTkFrame(
+                self.main_content,
+                fg_color="#FFFFFF",
+                corner_radius=12,
+                border_width=1,
+                border_color="#E5E8EB"
+            )
+            self.log_card.grid(row=3, column=0, sticky="nsew")
+
+            log_header = ctk.CTkFrame(self.log_card, fg_color="transparent")
+            log_header.pack(fill="x", padx=14, pady=(8, 4))
+
+            lbl_log_title = ctk.CTkLabel(
+                log_header,
+                text="처리 내역",
+                font=("Segoe UI", 11, "bold"),
+                text_color="#333D4B"
+            )
+            lbl_log_title.pack(side="left")
+
+            btn_clear = ctk.CTkButton(
+                log_header,
+                text="비우기",
+                width=50,
+                height=22,
+                corner_radius=10,
+                font=("Segoe UI", 10),
+                fg_color="#F2F4F6",
+                text_color="#6B7684",
+                hover_color="#E5E8EB",
+                command=self.clear_log
+            )
+            btn_clear.pack(side="right")
+
+            self.txt_log = ctk.CTkTextbox(
+                self.log_card,
+                font=("Consolas", 10),
+                fg_color="#F8F9FA",
+                text_color="#333D4B",
+                corner_radius=8,
+                border_width=1,
+                border_color="#E9ECEF"
+            )
+            self.txt_log.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+
+            # 초기 모드 적용
+            self.set_mode("conv")
+
+        def _build_options(self):
+            # (1) 사진/문서 변환 옵션
+            self.opt_conv = ctk.CTkFrame(self.options_card, fg_color="transparent")
+            self.sw_img_merge = ctk.CTkSwitch(
+                self.opt_conv,
+                text="사진 1개 PDF로 병합",
+                variable=self.img_merge_var,
+                font=("Segoe UI", 11, "bold"),
+                text_color="#191F28",
+                progress_color="#3182F6"
+            )
+            self.sw_img_merge.pack(side="left", padx=14, pady=10)
+
+            lbl_excel = ctk.CTkLabel(
+                self.opt_conv,
+                text="엑셀 맞춤:",
+                font=("Segoe UI", 11, "bold"),
+                text_color="#4E5968"
+            )
+            lbl_excel.pack(side="left", padx=(10, 6))
+
+            self.seg_excel = ctk.CTkSegmentedButton(
+                self.opt_conv,
+                values=["너비 1페이지", "시트 전체 1장", "원본 유지"],
+                variable=self.excel_fit_var,
+                font=("Segoe UI", 11),
+                corner_radius=6,
+                selected_color="#3182F6",
+                selected_hover_color="#1B64DA"
+            )
+            self.seg_excel.pack(side="left", padx=(0, 14))
+
+            # (2) 합치기 옵션
+            self.opt_merge = ctk.CTkFrame(self.options_card, fg_color="transparent")
+            self.sw_sort = ctk.CTkSwitch(
+                self.opt_merge,
+                text="가나다순 자동 정렬",
+                variable=self.pdf_sort_var,
+                font=("Segoe UI", 11, "bold"),
+                text_color="#191F28",
+                progress_color="#3182F6"
+            )
+            self.sw_sort.pack(side="left", padx=14, pady=10)
+
+            # (3) 분할/추출 옵션
+            self.opt_split = ctk.CTkFrame(self.options_card, fg_color="transparent")
+            lbl_split = ctk.CTkLabel(
+                self.opt_split,
+                text="추출 범위:",
+                font=("Segoe UI", 11, "bold"),
+                text_color="#191F28"
+            )
+            lbl_split.pack(side="left", padx=(14, 6), pady=10)
+
+            self.ent_split = ctk.CTkEntry(
+                self.opt_split,
+                textvariable=self.split_range_var,
+                placeholder_text="예: 1-3, 5 (미입력 시 낱개 분할)",
+                width=260,
+                height=32,
+                corner_radius=6,
+                font=("Segoe UI", 11)
+            )
+            self.ent_split.pack(side="left", padx=(0, 14), pady=10)
+
+            # (4) 압축 옵션
+            self.opt_compress = ctk.CTkFrame(self.options_card, fg_color="transparent")
+            lbl_comp = ctk.CTkLabel(
+                self.opt_compress,
+                text="압축 강도:",
+                font=("Segoe UI", 11, "bold"),
+                text_color="#191F28"
+            )
+            lbl_comp.pack(side="left", padx=(14, 6), pady=10)
+
+            self.seg_comp = ctk.CTkSegmentedButton(
+                self.opt_compress,
+                values=["보통 (150 DPI)", "고압축 (100 DPI)"],
+                variable=self.compress_level_var,
+                font=("Segoe UI", 11),
+                corner_radius=6,
+                selected_color="#3182F6"
+            )
+            self.seg_comp.pack(side="left", padx=(0, 14), pady=10)
+
+            # (5) 회전 옵션
+            self.opt_rotate = ctk.CTkFrame(self.options_card, fg_color="transparent")
+            lbl_rot = ctk.CTkLabel(
+                self.opt_rotate,
+                text="회전 각도:",
+                font=("Segoe UI", 11, "bold"),
+                text_color="#191F28"
+            )
+            lbl_rot.pack(side="left", padx=(14, 6), pady=10)
+
+            self.seg_rot = ctk.CTkSegmentedButton(
+                self.opt_rotate,
+                values=["90° ↻", "180°", "270° ↺"],
+                variable=self.rotate_angle_var,
+                font=("Segoe UI", 11),
+                corner_radius=6,
+                selected_color="#3182F6"
+            )
+            self.seg_rot.pack(side="left", padx=(0, 14), pady=10)
+
+            # (6) 한글 복구 옵션
+            self.opt_fixer = ctk.CTkFrame(self.options_card, fg_color="transparent")
+            lbl_fixer_info = ctk.CTkLabel(
+                self.opt_fixer,
+                text="맥북(NFD) 자소 분리 및 인코딩 오류 복구",
+                font=("Segoe UI", 11),
+                text_color="#4E5968"
+            )
+            lbl_fixer_info.pack(side="left", padx=14, pady=10)
+
+        def set_mode(self, mode):
+            self.current_mode = mode
+
+            # 사이드바 활성화 스타일
+            for k, btn in self.nav_buttons.items():
+                if k == mode:
+                    btn.configure(
+                        fg_color="#E8F3FF",
+                        text_color="#1B64DA",
+                        font=("Segoe UI", 12, "bold")
+                    )
+                else:
+                    btn.configure(
+                        fg_color="transparent",
+                        text_color="#4E5968",
+                        font=("Segoe UI", 12)
+                    )
+
+            # 기존 옵션 숨기기
+            self.opt_conv.pack_forget()
+            self.opt_merge.pack_forget()
+            self.opt_split.pack_forget()
+            self.opt_compress.pack_forget()
+            self.opt_rotate.pack_forget()
+            self.opt_fixer.pack_forget()
+            self.btn_pick_folder.pack_forget()
+
+            if mode == "conv":
+                self.lbl_mode_title.configure(text="사진·문서 변환")
+                self.lbl_mode_desc.configure(text="이미지 및 문서 파일 ➔ PDF 일괄 변환")
+                self.lbl_drop_icon.configure(text="📷")
+                self.lbl_drop_title.configure(text="변환할 파일을 여기에 놓으세요")
+                self.btn_pick_primary.configure(text="파일 선택")
+                self.opt_conv.pack(fill="x")
+            elif mode == "merge":
+                self.lbl_mode_title.configure(text="PDF 병합")
+                self.lbl_mode_desc.configure(text="여러 PDF 파일을 하나로 병합")
+                self.lbl_drop_icon.configure(text="📑")
+                self.lbl_drop_title.configure(text="병합할 PDF 파일을 여기에 놓으세요")
+                self.btn_pick_primary.configure(text="파일 선택")
+                self.opt_merge.pack(fill="x")
+            elif mode == "split":
+                self.lbl_mode_title.configure(text="페이지 분할·추출")
+                self.lbl_mode_desc.configure(text="지정 페이지 추출 또는 1장씩 분할")
+                self.lbl_drop_icon.configure(text="✂️")
+                self.lbl_drop_title.configure(text="분할할 PDF 파일을 여기에 놓으세요")
+                self.btn_pick_primary.configure(text="파일 선택")
+                self.opt_split.pack(fill="x")
+            elif mode == "compress":
+                self.lbl_mode_title.configure(text="용량 압축")
+                self.lbl_mode_desc.configure(text="문서 용량 최적화 및 압축")
+                self.lbl_drop_icon.configure(text="📉")
+                self.lbl_drop_title.configure(text="압축할 PDF 파일을 여기에 놓으세요")
+                self.btn_pick_primary.configure(text="파일 선택")
+                self.opt_compress.pack(fill="x")
+            elif mode == "rotate":
+                self.lbl_mode_title.configure(text="방향 회전")
+                self.lbl_mode_desc.configure(text="문서 방향 회전 (90° / 180° / 270°)")
+                self.lbl_drop_icon.configure(text="🔄")
+                self.lbl_drop_title.configure(text="회전할 PDF 파일을 여기에 놓으세요")
+                self.btn_pick_primary.configure(text="파일 선택")
+                self.opt_rotate.pack(fill="x")
+            elif mode == "fixer":
+                self.lbl_mode_title.configure(text="파일명 복구")
+                self.lbl_mode_desc.configure(text="맥북(NFD) 자소 분리 및 인코딩 깨짐 복구")
+                self.lbl_drop_icon.configure(text="🛠️")
+                self.lbl_drop_title.configure(text="복구할 파일 또는 폴더를 여기에 놓으세요")
+                self.btn_pick_primary.configure(text="파일 선택")
+                self.btn_pick_folder.pack(side="left", padx=4)
+                self.opt_fixer.pack(fill="x")
+
+        def log(self, message):
+            self.txt_log.insert("end", str(message) + "\n")
+            self.txt_log.see("end")
+
+        def clear_log(self):
+            self.txt_log.delete("1.0", "end")
+
+        def _on_drop_files(self, dropped_items):
+            clean_items = []
+            for item in dropped_items:
+                if isinstance(item, bytes):
+                    try: item = item.decode('utf-8')
+                    except Exception: item = item.decode('mbcs', errors='ignore')
+                clean_items.append(item)
+
+            if self.current_mode == "fixer":
+                self.handle_fixer_items(clean_items, "드래그앤드롭")
             else:
-                btn.config(bg="#E9ECEF", fg="#495057", font=("Malgun Gothic", 9))
+                self.handle_pdf_items(clean_items)
 
-        opt_conv.pack_forget()
-        opt_merge.pack_forget()
-        opt_split.pack_forget()
-        opt_compress.pack_forget()
-        opt_rotate.pack_forget()
+        def _on_pick_files(self):
+            mode = self.current_mode
+            if mode == "fixer":
+                flt = [("모든 파일", "*.*")]
+                files = filedialog.askopenfilenames(title="파일 선택", filetypes=flt)
+                if files: self.handle_fixer_items(files, "파일 선택")
+            elif mode == "conv":
+                flt = [("사진 및 문서", "*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.docx;*.xlsx;*.pptx;*.hwp;*.hwpx;*.txt;*.csv"), ("모든 파일", "*.*")]
+                files = filedialog.askopenfilenames(title="파일 선택", filetypes=flt)
+                if files: self.handle_pdf_items(files)
+            else:
+                flt = [("PDF 파일", "*.pdf"), ("모든 파일", "*.*")]
+                files = filedialog.askopenfilenames(title="PDF 선택", filetypes=flt)
+                if files: self.handle_pdf_items(files)
 
-        if m == "conv":
-            opt_conv.pack(fill=tk.X, pady=(2, 4))
-            lbl_drop_icon2.config(text="📷")
-            lbl_drop_title2.config(text="변환할 사진/서류를 여기에 끌어다 놓으세요")
-            lbl_drop_desc2.config(text="")
-            btn_pick_pdf.config(text="📄 파일 직접 선택")
-        elif m == "merge":
-            opt_merge.pack(fill=tk.X, pady=(2, 4))
-            lbl_drop_icon2.config(text="📑")
-            lbl_drop_title2.config(text="합칠 PDF들을 여기에 끌어다 놓으세요")
-            lbl_drop_desc2.config(text="")
-            btn_pick_pdf.config(text="📑 PDF 직접 선택")
-        elif m == "split":
-            opt_split.pack(fill=tk.X, pady=(2, 4))
-            lbl_drop_icon2.config(text="✂️")
-            lbl_drop_title2.config(text="분할할 PDF를 여기에 끌어다 놓으세요")
-            lbl_drop_desc2.config(text="")
-            btn_pick_pdf.config(text="✂️ PDF 직접 선택")
-        elif m == "compress":
-            opt_compress.pack(fill=tk.X, pady=(2, 4))
-            lbl_drop_icon2.config(text="📉")
-            lbl_drop_title2.config(text="압축할 PDF를 여기에 끌어다 놓으세요")
-            lbl_drop_desc2.config(text="")
-            btn_pick_pdf.config(text="📉 PDF 직접 선택")
-        elif m == "rotate":
-            opt_rotate.pack(fill=tk.X, pady=(2, 4))
-            lbl_drop_icon2.config(text="🔄")
-            lbl_drop_title2.config(text="회전할 PDF를 여기에 끌어다 놓으세요")
-            lbl_drop_desc2.config(text="")
-            btn_pick_pdf.config(text="🔄 PDF 직접 선택")
+        def _on_pick_folder(self):
+            folder = filedialog.askdirectory(title="폴더 선택")
+            if folder:
+                self.handle_fixer_items([folder], "폴더 선택")
 
-    for key, text in modes_def:
-        b = tk.Button(
-            mode_frame,
-            text=text,
-            relief=tk.FLAT,
-            padx=6,
-            pady=6,
-            cursor="hand2",
-            command=lambda k=key: [pdf_mode.set(k), update_pdf_ui()]
-        )
-        b.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
-        mode_buttons[key] = b
+        def handle_fixer_items(self, item_list, source_label="선택"):
+            all_res = []
+            for item in item_list:
+                if os.path.exists(item):
+                    res = process_path(item)
+                    all_res.extend(res)
 
-    # 2) 모드별 세부 옵션 프레임 (동적 전환)
-    opt_container = tk.Frame(tab_pdf, bg="#F4F6F9", height=32)
-    opt_container.pack(fill=tk.X)
+            if all_res:
+                self.log(f"✅ [복구 완료] {len(all_res)}개 항목:")
+                for old_n, new_n in all_res:
+                    self.log(f"   • {old_n} -> {new_n}")
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                messagebox.showinfo("복구 완료", f"총 {len(all_res)}개 파일/폴더명이 복구되었습니다.")
+            else:
+                self.log(f"✨ [확인] 선택한 항목이 이미 정상이거나 복구 대상이 없습니다.")
+                winsound.MessageBeep(winsound.MB_ICONINFORMATION)
+                messagebox.showinfo("확인", "깨진 파일명이 없거나 이미 정상입니다.")
 
-    # (1) 사진/문서 옵션
-    opt_conv = tk.Frame(opt_container, bg="#F4F6F9")
-    chk_img_merge = tk.Checkbutton(
-        opt_conv,
-        text="사진들을 1개 PDF로 묶어서 저장",
-        variable=img_merge_var,
-        bg="#F4F6F9",
-        font=("Malgun Gothic", 9, "bold"),
-        fg="#004797"
-    )
-    chk_img_merge.pack(side=tk.LEFT, padx=(0, 10))
+        def handle_pdf_items(self, item_list):
+            mode = self.current_mode
+            paths = []
+            for it in item_list:
+                if os.path.exists(it):
+                    if os.path.isfile(it):
+                        paths.append(it)
+                    elif os.path.isdir(it):
+                        for r, _, fnames in os.walk(it):
+                            for fn in fnames:
+                                paths.append(os.path.join(r, fn))
 
-    lbl_excel_fit = tk.Label(
-        opt_conv,
-        text="|  📊 엑셀 맞춤:",
-        font=("Malgun Gothic", 9, "bold"),
-        fg="#333",
-        bg="#F4F6F9"
-    )
-    lbl_excel_fit.pack(side=tk.LEFT, padx=(5, 3))
-
-    rb_fit_width = tk.Radiobutton(
-        opt_conv,
-        text="너비 1페이지 맞춤 (가로 잘림 방지, 기본)",
-        variable=excel_fit_var,
-        value="width",
-        bg="#F4F6F9",
-        font=("Malgun Gothic", 9)
-    )
-    rb_fit_width.pack(side=tk.LEFT, padx=3)
-
-    rb_fit_sheet = tk.Radiobutton(
-        opt_conv,
-        text="시트 전체 1장 맞춤",
-        variable=excel_fit_var,
-        value="sheet",
-        bg="#F4F6F9",
-        font=("Malgun Gothic", 9)
-    )
-    rb_fit_sheet.pack(side=tk.LEFT, padx=3)
-
-    rb_fit_none = tk.Radiobutton(
-        opt_conv,
-        text="원본 유지",
-        variable=excel_fit_var,
-        value="none",
-        bg="#F4F6F9",
-        font=("Malgun Gothic", 9)
-    )
-    rb_fit_none.pack(side=tk.LEFT, padx=3)
-
-    # (2) 합치기 옵션
-    opt_merge = tk.Frame(opt_container, bg="#F4F6F9")
-    chk_pdf_sort = tk.Checkbutton(
-        opt_merge,
-        text="파일명 가나다순으로 정렬",
-        variable=pdf_sort_var,
-        bg="#F4F6F9",
-        font=("Malgun Gothic", 9, "bold"),
-        fg="#004797"
-    )
-    chk_pdf_sort.pack(anchor="w")
-
-    # (3) 분할/추출 옵션
-    opt_split = tk.Frame(opt_container, bg="#F4F6F9")
-    lbl_split_range = tk.Label(opt_split, text="추출할 페이지:", font=("Malgun Gothic", 9, "bold"), bg="#F4F6F9")
-    lbl_split_range.pack(side=tk.LEFT)
-    ent_split_range = tk.Entry(opt_split, textvariable=split_range_var, font=("Malgun Gothic", 9), width=18)
-    ent_split_range.pack(side=tk.LEFT, padx=6)
-    lbl_split_hint = tk.Label(
-        opt_split,
-        text="예: 1-3, 5  (💡 빈칸으로 비워두면 1장씩 낱개로 모두 분할됩니다)",
-        font=("Malgun Gothic", 8),
-        fg="#666",
-        bg="#F4F6F9"
-    )
-    lbl_split_hint.pack(side=tk.LEFT)
-
-    # (4) 압축 옵션
-    opt_compress = tk.Frame(opt_container, bg="#F4F6F9")
-    lbl_comp = tk.Label(opt_compress, text="압축 강도:", font=("Malgun Gothic", 9, "bold"), bg="#F4F6F9")
-    lbl_comp.pack(side=tk.LEFT, padx=(0, 8))
-    rb_comp1 = tk.Radiobutton(
-        opt_compress,
-        text="보통 압축 (150 DPI - 추천 / 선명함 유지)",
-        variable=compress_level_var,
-        value="normal",
-        bg="#F4F6F9",
-        font=("Malgun Gothic", 9)
-    )
-    rb_comp1.pack(side=tk.LEFT, padx=4)
-    rb_comp2 = tk.Radiobutton(
-        opt_compress,
-        text="강한 압축 (100 DPI - 메일 첨부 및 웹 업로드용)",
-        variable=compress_level_var,
-        value="high",
-        bg="#F4F6F9",
-        font=("Malgun Gothic", 9)
-    )
-    rb_comp2.pack(side=tk.LEFT, padx=4)
-
-    # (5) 회전 옵션
-    opt_rotate = tk.Frame(opt_container, bg="#F4F6F9")
-    lbl_rot = tk.Label(opt_rotate, text="회전 각도:", font=("Malgun Gothic", 9, "bold"), bg="#F4F6F9")
-    lbl_rot.pack(side=tk.LEFT, padx=(0, 8))
-    rb_rot1 = tk.Radiobutton(opt_rotate, text="시계방향 90° ↻", variable=rotate_angle_var, value=90, bg="#F4F6F9", font=("Malgun Gothic", 9))
-    rb_rot1.pack(side=tk.LEFT, padx=4)
-    rb_rot2 = tk.Radiobutton(opt_rotate, text="180° 반전 ⟲", variable=rotate_angle_var, value=180, bg="#F4F6F9", font=("Malgun Gothic", 9))
-    rb_rot2.pack(side=tk.LEFT, padx=4)
-    rb_rot3 = tk.Radiobutton(opt_rotate, text="반시계방향 90° ↺", variable=rotate_angle_var, value=270, bg="#F4F6F9", font=("Malgun Gothic", 9))
-    rb_rot3.pack(side=tk.LEFT, padx=4)
-
-    # 3) PDF 대형 드롭존
-    drop_frame_pdf = tk.Frame(tab_pdf, bg="#EBF3FB", bd=2, relief=tk.GROOVE, padx=20, pady=16)
-    drop_frame_pdf.pack(fill=tk.X, pady=(4, 6))
-
-    lbl_drop_icon2 = tk.Label(drop_frame_pdf, text="📷", font=("Segoe UI Emoji", 22), bg="#EBF3FB")
-    lbl_drop_icon2.pack()
-
-    lbl_drop_title2 = tk.Label(
-        drop_frame_pdf,
-        text="여기에 파일을 끌어다 놓으세요 (Drag & Drop)",
-        font=("Malgun Gothic", 11, "bold"),
-        fg="#004797",
-        bg="#EBF3FB"
-    )
-    lbl_drop_title2.pack(pady=(2, 2))
-
-    lbl_drop_desc2 = tk.Label(
-        drop_frame_pdf,
-        text="선택한 모드에 맞춰 즉시 처리됩니다.",
-        font=("Malgun Gothic", 9),
-        fg="#555",
-        bg="#EBF3FB"
-    )
-    lbl_drop_desc2.pack()
-
-    # 4) PDF 실제 처리 디스패처
-    def handle_pdf_items(item_list):
-        mode = pdf_mode.get()
-        paths = []
-        for it in item_list:
-            if isinstance(it, bytes):
-                try:
-                    it = it.decode('utf-8')
-                except Exception:
-                    it = it.decode('mbcs', errors='ignore')
-            if os.path.exists(it):
-                if os.path.isfile(it):
-                    paths.append(it)
-                elif os.path.isdir(it):
-                    for r, _, fnames in os.walk(it):
-                        for fn in fnames:
-                            paths.append(os.path.join(r, fn))
-
-        if not paths:
-            log("⚠️ 처리할 유효한 파일이 없습니다.")
-            return
-
-        # 모드별 처리
-        if mode == "conv":
-            img_files = [p for p in paths if os.path.splitext(p)[1].lower() in IMAGE_EXTS]
-            doc_files = [p for p in paths if os.path.splitext(p)[1].lower() in DOC_EXTS]
-
-            if not img_files and not doc_files:
-                log("⚠️ 지원되는 사진(JPG, PNG 등) 또는 문서(Word, Excel, HWP 등) 파일이 없습니다.")
-                messagebox.showwarning("파일 확인", "선택하신 파일 중 지원되는 사진이나 문서 파일이 없습니다.")
+            if not paths:
+                self.log("⚠️ 처리할 유효한 파일이 없습니다.")
                 return
 
-            if img_files:
-                merge_flag = img_merge_var.get()
-                ok, out_pdfs, msg = convert_images_to_pdf(img_files, merge_into_single=merge_flag)
-                if ok:
-                    log(f"📷 {msg}")
-                    for op in out_pdfs:
-                        log(f"   -> 저장: {os.path.basename(op)}")
-                else:
-                    log(f"❌ {msg}")
+            if mode == "conv":
+                img_files = [p for p in paths if os.path.splitext(p)[1].lower() in IMAGE_EXTS]
+                doc_files = [p for p in paths if os.path.splitext(p)[1].lower() in DOC_EXTS]
 
-            if doc_files:
-                current_fit = excel_fit_var.get()
-                fit_label = "너비 1페이지 맞춤" if current_fit == "width" else ("시트 전체 1장 맞춤" if current_fit == "sheet" else "원본 설정 유지")
-                log(f"📄 총 {len(doc_files)}개의 문서를 PDF로 변환 시작 (엑셀 맞춤: {fit_label})...")
+                if not img_files and not doc_files:
+                    self.log("⚠️ 변환 가능한 파일(사진, Word, Excel, HWP 등)이 없습니다.")
+                    messagebox.showwarning("파일 확인", "변환 가능한 사진이나 문서 파일이 없습니다.")
+                    return
+
+                if img_files:
+                    merge_flag = self.img_merge_var.get()
+                    ok, out_pdfs, msg = convert_images_to_pdf(img_files, merge_into_single=merge_flag)
+                    if ok:
+                        self.log(f"📷 {msg}")
+                        for op in out_pdfs:
+                            self.log(f"   -> {os.path.basename(op)}")
+                    else:
+                        self.log(f"❌ {msg}")
+
+                if doc_files:
+                    cur_fit_val = self.excel_fit_var.get()
+                    fit_mode = "width" if "너비" in cur_fit_val else ("sheet" if "전체" in cur_fit_val else "none")
+                    self.log(f"📄 문서 {len(doc_files)}개 변환 시작...")
+                    succ_cnt = 0
+                    for df in doc_files:
+                        ok, out_pdf, msg = convert_doc_to_pdf(df, excel_fit_mode=fit_mode)
+                        if ok:
+                            succ_cnt += 1
+                            self.log(f"   • {os.path.basename(df)} -> {os.path.basename(out_pdf)}")
+                        else:
+                            self.log(f"   ❌ {os.path.basename(df)}: {msg}")
+                    self.log(f"📄 문서 변환 완료: {len(doc_files)}개 중 {succ_cnt}개 성공")
+
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                messagebox.showinfo("완료", "PDF 변환이 완료되었습니다.")
+
+            elif mode == "merge":
+                pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
+                if len(pdf_files) < 2:
+                    self.log("⚠️ 병합하려면 2개 이상의 PDF 파일이 필요합니다.")
+                    messagebox.showwarning("PDF 병합", "2개 이상의 PDF 파일을 선택해 주세요.")
+                    return
+
+                sort_flag = self.pdf_sort_var.get()
+                ok, out_pdf, msg = merge_pdfs(pdf_files, sort_by_name=sort_flag)
+                if ok:
+                    self.log(f"📑 {msg}")
+                    self.log(f"   -> {os.path.basename(out_pdf)}")
+                    winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                    messagebox.showinfo("완료", f"PDF {len(pdf_files)}개가 병합되었습니다.\n저장: {os.path.basename(out_pdf)}")
+                else:
+                    self.log(f"❌ {msg}")
+                    messagebox.showerror("오류", msg)
+
+            elif mode == "split":
+                pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
+                if not pdf_files:
+                    self.log("⚠️ 분할할 PDF 파일이 없습니다.")
+                    return
+
+                range_text = self.split_range_var.get().strip()
+                total_created = 0
+                for pf in pdf_files:
+                    ok, created, msg = split_or_extract_pdf(pf, range_text)
+                    if ok:
+                        total_created += len(created)
+                        self.log(f"✂️ [{os.path.basename(pf)}] {msg}")
+                        for cp in created:
+                            self.log(f"   -> {os.path.basename(cp)}")
+                    else:
+                        self.log(f"❌ [{os.path.basename(pf)}] {msg}")
+
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                messagebox.showinfo("완료", f"총 {total_created}개 PDF 파일이 생성되었습니다.")
+
+            elif mode == "compress":
+                pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
+                if not pdf_files:
+                    self.log("⚠️ 압축할 PDF 파일이 없습니다.")
+                    return
+
+                is_high = "고압축" in self.compress_level_var.get()
+                dpi_val = 100 if is_high else 150
+                quality_val = 70 if is_high else 78
+
+                self.log(f"📉 PDF 압축 진행 중 ({len(pdf_files)}개)...")
                 succ_cnt = 0
-                for df in doc_files:
-                    ok, out_pdf, msg = convert_doc_to_pdf(df, excel_fit_mode=current_fit)
+                for pf in pdf_files:
+                    ok, out_p, msg = compress_pdf(pf, dpi=dpi_val, quality=quality_val)
                     if ok:
                         succ_cnt += 1
-                        log(f"   • {os.path.basename(df)} -> {os.path.basename(out_pdf)}")
+                        self.log(f"   • [{os.path.basename(pf)}] {msg}")
                     else:
-                        log(f"   ❌ {os.path.basename(df)}: {msg}")
-                log(f"📄 문서 변환 완료: 총 {len(doc_files)}개 중 {succ_cnt}개 성공")
+                        self.log(f"   ❌ [{os.path.basename(pf)}] {msg}")
 
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-            messagebox.showinfo("변환 완료", "선택하신 사진 및 문서의 PDF 변환이 완료되었습니다!")
-
-        elif mode == "merge":
-            pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
-            if len(pdf_files) < 2:
-                log("⚠️ 합치려면 최소 2개 이상의 PDF 파일이 필요합니다.")
-                messagebox.showwarning("PDF 합치기", "합치려면 최소 2개 이상의 PDF 파일을 선택해 주세요.")
-                return
-
-            sort_flag = pdf_sort_var.get()
-            ok, out_pdf, msg = merge_pdfs(pdf_files, sort_by_name=sort_flag)
-            if ok:
-                log(f"📑 {msg}")
-                log(f"   -> 저장: {out_pdf}")
                 winsound.MessageBeep(winsound.MB_ICONASTERISK)
-                messagebox.showinfo("병합 완료", f"총 {len(pdf_files)}개 PDF가 하나로 합쳐졌습니다!\n\n저장: {os.path.basename(out_pdf)}")
+                messagebox.showinfo("완료", f"{succ_cnt}개 PDF의 압축이 완료되었습니다.")
+
+            elif mode == "rotate":
+                pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
+                if not pdf_files:
+                    self.log("⚠️ 회전할 PDF 파일이 없습니다.")
+                    return
+
+                rot_val = self.rotate_angle_var.get()
+                ang = 180 if "180" in rot_val else (270 if "270" in rot_val else 90)
+
+                self.log(f"🔄 PDF {ang}도 회전 진행 중 ({len(pdf_files)}개)...")
+                succ_cnt = 0
+                for pf in pdf_files:
+                    ok, out_p, msg = rotate_pdf(pf, angle=ang)
+                    if ok:
+                        succ_cnt += 1
+                        self.log(f"   • [{os.path.basename(pf)}] {msg}")
+                    else:
+                        self.log(f"   ❌ [{os.path.basename(pf)}] {msg}")
+
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                messagebox.showinfo("완료", f"{succ_cnt}개 PDF가 회전되었습니다.")
+
+        def _on_register_menu(self):
+            ok, msg = register_context_menu()
+            if ok:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                messagebox.showinfo("우클릭 등록", msg)
+                self.log(f"✨ {msg}")
             else:
-                log(f"❌ {msg}")
-                messagebox.showerror("오류", msg)
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+                messagebox.showerror("등록 실패", msg)
+                self.log(f"❌ {msg}")
 
-        elif mode == "split":
-            pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
-            if not pdf_files:
-                log("⚠️ 분할할 PDF 파일이 없습니다.")
-                return
+        def _on_unregister_menu(self):
+            ok, msg = unregister_context_menu()
+            if ok:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                messagebox.showinfo("우클릭 삭제", msg)
+                self.log(f"🗑️ {msg}")
+            else:
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+                messagebox.showerror("삭제 실패", msg)
+                self.log(f"❌ {msg}")
 
-            range_text = split_range_var.get().strip()
-            total_created = 0
-            for pf in pdf_files:
-                ok, created, msg = split_or_extract_pdf(pf, range_text)
-                if ok:
-                    total_created += len(created)
-                    log(f"✂️ [{os.path.basename(pf)}] {msg}")
-                    for cp in created:
-                        log(f"   -> {os.path.basename(cp)}")
-                else:
-                    log(f"❌ [{os.path.basename(pf)}] {msg}")
+        def _on_create_shortcut(self):
+            ok, msg = create_desktop_shortcut()
+            if ok:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                messagebox.showinfo("바로가기", msg)
+                self.log(f"📌 {msg}")
+            else:
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+                messagebox.showerror("생성 실패", msg)
+                self.log(f"❌ {msg}")
 
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-            messagebox.showinfo("분할/추출 완료", f"총 {total_created}개의 PDF 파일이 생성되었습니다!")
-
-        elif mode == "compress":
-            pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
-            if not pdf_files:
-                log("⚠️ 압축할 PDF 파일이 없습니다.")
-                return
-
-            dpi_val = 100 if compress_level_var.get() == "high" else 150
-            quality_val = 70 if compress_level_var.get() == "high" else 78
-
-            log(f"📉 PDF 용량 다이어트 진행 중 ({len(pdf_files)}개 파일)...")
-            succ_cnt = 0
-            for pf in pdf_files:
-                ok, out_p, msg = compress_pdf(pf, dpi=dpi_val, quality=quality_val)
-                if ok:
-                    succ_cnt += 1
-                    log(f"   • [{os.path.basename(pf)}] {msg}")
-                else:
-                    log(f"   ❌ [{os.path.basename(pf)}] {msg}")
-
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-            messagebox.showinfo("압축 완료", f"총 {succ_cnt}개 PDF의 용량 압축이 완료되었습니다!")
-
-        elif mode == "rotate":
-            pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
-            if not pdf_files:
-                log("⚠️ 회전할 PDF 파일이 없습니다.")
-                return
-
-            ang = rotate_angle_var.get()
-            log(f"🔄 PDF {ang}도 회전 진행 중 ({len(pdf_files)}개 파일)...")
-            succ_cnt = 0
-            for pf in pdf_files:
-                ok, out_p, msg = rotate_pdf(pf, angle=ang)
-                if ok:
-                    succ_cnt += 1
-                    log(f"   • [{os.path.basename(pf)}] {msg}")
-                else:
-                    log(f"   ❌ [{os.path.basename(pf)}] {msg}")
-
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-            messagebox.showinfo("회전 완료", f"총 {succ_cnt}개 PDF가 {ang}도 회전되어 저장되었습니다!")
-
-    # 5) PDF 수동 파일 선택 버튼
-    def on_pick_pdf_files():
-        mode = pdf_mode.get()
-        if mode == "conv":
-            flt = [("사진 및 문서", "*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.docx;*.xlsx;*.pptx;*.hwp;*.hwpx;*.txt;*.csv"), ("모든 파일", "*.*")]
-        else:
-            flt = [("PDF 파일", "*.pdf"), ("모든 파일", "*.*")]
-
-        files = filedialog.askopenfilenames(title="파일을 선택하세요", filetypes=flt)
-        if files:
-            handle_pdf_items(files)
-
-    btn_pick_pdf = tk.Button(
-        tab_pdf,
-        text="📄 사진 및 서류 파일 직접 선택",
-        font=("Malgun Gothic", 9, "bold"),
-        bg="#004797",
-        fg="white",
-        activebackground="#003366",
-        activeforeground="white",
-        padx=10,
-        pady=6,
-        relief=tk.FLAT,
-        cursor="hand2",
-        command=on_pick_pdf_files
-    )
-    btn_pick_pdf.pack(fill=tk.X, pady=(2, 4))
-
-    # 초기 모드 UI 반영
-    update_pdf_ui()
-
-    # ---------------------------------------------------------------------
-    # 드래그 앤 드롭 통합 핸들러 (현재 선택된 탭에 따라 동작)
-    # ---------------------------------------------------------------------
-    def on_drop_files(dropped_items):
-        clean_items = []
-        for item in dropped_items:
-            if isinstance(item, bytes):
-                try:
-                    item = item.decode('utf-8')
-                except Exception:
-                    item = item.decode('mbcs', errors='ignore')
-            clean_items.append(item)
-
-        selected_tab = notebook.select()
-        if notebook.nametowidget(selected_tab) == tab_pdf:
-            handle_pdf_items(clean_items)
-        else:
-            handle_fixer_items(clean_items, "드래그앤드롭")
-
-    if windnd:
-        windnd.hook_dropfiles(root, func=on_drop_files, force_unicode=True)
-
-    # ---------------------------------------------------------------------
-    # 3. 하단 공통 처리 결과 로그 창
-    # ---------------------------------------------------------------------
-    log_frame = tk.LabelFrame(
-        root,
-        text=" 처리 결과 로그 ",
-        font=("Malgun Gothic", 9, "bold"),
-        bg="#F4F6F9",
-        fg="#333",
-        padx=10,
-        pady=6
-    )
-    log_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(2, 10))
-
-    txt_log = tk.Text(
-        log_frame,
-        font=("Consolas", 9),
-        bg="#FFFFFF",
-        fg="#212529",
-        wrap=tk.WORD,
-        relief=tk.SOLID,
-        borderwidth=1
-    )
-    scrollbar = tk.Scrollbar(log_frame, command=txt_log.yview)
-    txt_log.configure(yscrollcommand=scrollbar.set)
-
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    txt_log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    # 로그 제어 버튼
-    log_ctrl_frame = tk.Frame(log_frame, bg="#F4F6F9")
-    log_ctrl_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
-
-    def on_clear_log():
-        txt_log.config(state=tk.NORMAL)
-        txt_log.delete("1.0", tk.END)
-        txt_log.config(state=tk.DISABLED)
-
-    btn_clear_log = tk.Button(
-        log_ctrl_frame,
-        text="🗑️ 로그 지우기",
-        font=("Malgun Gothic", 8),
-        bg="#E9ECEF",
-        relief=tk.FLAT,
-        cursor="hand2",
-        command=on_clear_log
-    )
-    btn_clear_log.pack(side=tk.RIGHT)
-
-    log("📌 구매부서 유틸리티 (PDF 종합 도구 & 파일명 복구) 준비 완료.")
-    log("💡 [탭 1: PDF 종합 도구] 사진/문서 PDF 변환(개별 변환 기본), 합치기, 분할, 압축, 회전을 지원합니다.")
-    log("💡 [탭 2: 파일명 복구] 깨진 한글 파일명을 윈도우 완성형으로 1초 만에 복구합니다.\n" + "-" * 70)
-
-    root.mainloop()
+    app = ModernPurchasingUtility()
+    app.mainloop()
 
 
 def main():
@@ -1597,9 +1655,9 @@ def main():
 
         count = len(all_results)
         if count > 0:
-            msg = f"✅ 한글 파일명 복구 완료!\n\n총 {count}개 항목이 정상 복구되었습니다.\n(영문, 숫자, 특수문자 등은 100% 보존됨)"
+            msg = f"파일명 복구 완료\n\n총 {count}개 항목이 정상 복구되었습니다."
         else:
-            msg = "선택하신 파일/폴더의 한글 이름이\n이미 모두 정상 완성형 상태입니다."
+            msg = "선택하신 항목의 파일명이 이미 정상입니다."
 
         show_auto_alert(APP_TITLE, msg, auto_close_sec=3)
     else:
