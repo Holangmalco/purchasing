@@ -1456,15 +1456,22 @@ header[data-testid="stHeader"] {
     backdrop-filter: blur(12px) !important;
 }
 
-/* [5] 메인 콘텐츠 브라우저 화면 맞춤 (반응형 100% 풀 와이드) */
+/* [5] 메인 콘텐츠 여백 최적화 (넓고 편안한 좌우 여백) */
 .block-container {
-    padding-top: 2rem !important;
+    padding-top: 2.2rem !important;
     padding-bottom: 5rem !important;
-    padding-left: 2.5rem !important;
-    padding-right: 2.5rem !important;
+    padding-left: 5rem !important;
+    padding-right: 5rem !important;
     max-width: 100% !important;
     width: 100% !important;
     box-sizing: border-box !important;
+}
+
+@media (max-width: 1400px) {
+    .block-container {
+        padding-left: 3.5rem !important;
+        padding-right: 3.5rem !important;
+    }
 }
 
 @media (max-width: 992px) {
@@ -1555,16 +1562,49 @@ div.stButton > button[kind="primary"]:hover, div.stDownloadButton > button[kind=
     transform: translateY(-2px);
 }
 
-/* [9] 텍스트 입력창 & 텍스트에어리어 & 셀렉트박스 */
-div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="textarea"] {
+/* [9] 텍스트 입력창 & 텍스트에어리어 & 셀렉트박스 (배경 대비 극대화) */
+div[data-baseweb="input"], 
+div[data-baseweb="select"] > div, 
+div[data-baseweb="textarea"] {
     border-radius: 12px !important;
-    border-color: #E5E8EB !important;
+    border: 1.5px solid #D1D6DB !important;
+    background-color: #F8F9FA !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+div[data-baseweb="input"]:hover, 
+div[data-baseweb="select"] > div:hover, 
+div[data-baseweb="textarea"]:hover {
+    border-color: #B0B8C1 !important;
+    background-color: #F2F4F6 !important;
+}
+
+div[data-baseweb="input"]:focus-within, 
+div[data-baseweb="select"] > div:focus-within, 
+div[data-baseweb="textarea"]:focus-within {
+    border-color: #3182F6 !important;
     background-color: #FFFFFF !important;
+    box-shadow: 0 0 0 3.5px rgba(49, 130, 246, 0.15) !important;
+}
+
+/* input & textarea 내부 요소 스타일 */
+div[data-baseweb="input"] input, 
+div[data-baseweb="textarea"] textarea {
+    background-color: transparent !important;
+    color: #191F28 !important;
+    font-weight: 500 !important;
+}
+
+/* 파일 업로더 드래그앤드롭 영역 대비 */
+div[data-testid="stFileUploader"] section {
+    border-radius: 14px !important;
+    border: 1.5px dashed #D1D6DB !important;
+    background-color: #F8F9FA !important;
     transition: all 0.2s ease;
 }
-div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within, div[data-baseweb="textarea"]:focus-within {
+div[data-testid="stFileUploader"] section:hover {
     border-color: #3182F6 !important;
-    box-shadow: 0 0 0 3px rgba(49, 130, 246, 0.12) !important;
+    background-color: #F2F4F6 !important;
 }
 
 /* [10] 탭 (Apple 세그먼트 컨트롤 스타일) */

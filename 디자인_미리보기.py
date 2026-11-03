@@ -40,15 +40,22 @@ header[data-testid="stHeader"] {
     backdrop-filter: blur(12px) !important;
 }
 
-/* [4] 메인 콘텐츠 브라우저 화면 맞춤 (반응형 100% 풀 와이드) */
+/* [4] 메인 콘텐츠 여백 최적화 (넓고 편안한 좌우 여백) */
 .block-container {
-    padding-top: 2rem !important;
+    padding-top: 2.2rem !important;
     padding-bottom: 5rem !important;
-    padding-left: 2.5rem !important;
-    padding-right: 2.5rem !important;
+    padding-left: 5rem !important;
+    padding-right: 5rem !important;
     max-width: 100% !important;
     width: 100% !important;
     box-sizing: border-box !important;
+}
+
+@media (max-width: 1400px) {
+    .block-container {
+        padding-left: 3.5rem !important;
+        padding-right: 3.5rem !important;
+    }
 }
 
 @media (max-width: 992px) {
@@ -140,17 +147,36 @@ div.stButton > button[kind="primary"]:hover {
     transform: translateY(-2px);
 }
 
-/* [8] 텍스트 입력창 & 셀렉트박스 */
-div[data-baseweb="input"], div[data-baseweb="select"] {
+/* [8] 텍스트 입력창 & 셀렉트박스 (배경 대비 극대화) */
+div[data-baseweb="input"], 
+div[data-baseweb="select"] > div, 
+div[data-baseweb="textarea"] {
     border-radius: 12px !important;
-    border-color: #E5E8EB !important;
-    background-color: #F9FAFB !important;
-    transition: all 0.2s ease;
+    border: 1.5px solid #D1D6DB !important;
+    background-color: #F8F9FA !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
-div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within {
+
+div[data-baseweb="input"]:hover, 
+div[data-baseweb="select"] > div:hover, 
+div[data-baseweb="textarea"]:hover {
+    border-color: #B0B8C1 !important;
+    background-color: #F2F4F6 !important;
+}
+
+div[data-baseweb="input"]:focus-within, 
+div[data-baseweb="select"] > div:focus-within, 
+div[data-baseweb="textarea"]:focus-within {
     border-color: #3182F6 !important;
     background-color: #FFFFFF !important;
-    box-shadow: 0 0 0 3px rgba(49, 130, 246, 0.12) !important;
+    box-shadow: 0 0 0 3.5px rgba(49, 130, 246, 0.15) !important;
+}
+
+div[data-baseweb="input"] input, 
+div[data-baseweb="textarea"] textarea {
+    background-color: transparent !important;
+    color: #191F28 !important;
+    font-weight: 500 !important;
 }
 
 /* [9] 탭 (Apple 세그먼트 컨트롤 스타일) */
