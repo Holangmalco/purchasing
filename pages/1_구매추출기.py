@@ -1398,65 +1398,187 @@ def parse_smart_contact_memo(text):
 # ==========================================
 
 # ---------------------------------------------------------
-# 🎨 [UI 개선] 미니멀 & 모던 스타일 CSS 주입
+# 🎨 [UI 개선] 토스 & 애플 스타일 미니멀 모던 CSS 주입
 # ---------------------------------------------------------
 st.markdown("""
 <style>
-/* 전역 폰트 및 자간 최적화 */
-html, body, [class*="css"] {
-    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Segoe UI", Roboto, "Malgun Gothic", sans-serif;
+/* [1] Pretendard 웹폰트 로드 & 전역 적용 */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css");
+
+* {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif !important;
+    letter-spacing: -0.025em;
 }
 
-/* 카드 및 컨테이너 라운딩 */
-div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"] {
-    border-radius: 12px;
-    border: 1px solid #E5E8EB;
-    background-color: #FFFFFF;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+/* [2] 전체 배경색 (소프트 미색 그레이) */
+.stApp {
+    background-color: #F8F9FA !important;
+    color: #191F28;
 }
 
-/* 사이드바 메뉴 3단 탭 스타일 */
-div[data-testid="stSidebar"] div[role="radiogroup"] {
-    gap: 4px;
+/* [3] 스트림릿 기본 상단 무지개 바 및 불필요한 헤더 숨김 */
+div[data-testid="stDecoration"] {
+    display: none !important;
 }
-div[data-testid="stSidebar"] div[role="radiogroup"] label {
+header[data-testid="stHeader"] {
+    background: rgba(248, 249, 250, 0.85) !important;
+    backdrop-filter: blur(12px) !important;
+}
+
+/* [4] 메인 콘텐츠 여백 최적화 */
+.block-container {
+    padding-top: 2rem !important;
+    padding-bottom: 5rem !important;
+    max-width: 1220px !important;
+}
+
+/* [5] 사이드바 토스 스타일 */
+section[data-testid="stSidebar"] {
+    background-color: #FFFFFF !important;
+    border-right: 1px solid #ECEFF2 !important;
+}
+section[data-testid="stSidebar"] .block-container {
+    padding-top: 2rem !important;
+    padding-left: 1.25rem !important;
+    padding-right: 1.25rem !important;
+}
+
+/* 사이드바 메뉴 캡슐 버튼 */
+section[data-testid="stSidebar"] div[role="radiogroup"] {
+    gap: 6px;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] label {
     background-color: transparent;
-    padding: 10px 14px;
-    border-radius: 10px;
-    transition: all 0.15s ease-in-out;
-    margin-bottom: 2px;
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 500;
+    color: #4E5968;
+    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+    margin-bottom: 4px;
+    border: 1px solid transparent;
     cursor: pointer;
 }
-div[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
     background-color: #F2F4F6;
+    color: #191F28;
 }
-div[data-testid="stSidebar"] div[role="radiogroup"] label[data-checked="true"] {
-    background-color: #E8F3FF;
-    font-weight: 600;
+section[data-testid="stSidebar"] div[role="radiogroup"] label[data-checked="true"] {
+    background-color: #E8F3FF !important;
+    color: #1B64DA !important;
+    font-weight: 700 !important;
+    border: 1px solid #D0E4FF !important;
 }
 
-/* 버튼 모던 라운딩 */
-div.stButton > button {
-    border-radius: 8px;
-    font-weight: 600;
-    transition: all 0.15s ease;
+/* [6] 플로팅 카드 컨테이너 (애플/토스 시그니처 카드) */
+div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"] {
+    background-color: #FFFFFF !important;
+    border-radius: 18px !important;
+    border: 1px solid #EAECEF !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03) !important;
+    padding: 22px 26px !important;
+    margin-bottom: 1.2rem !important;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
-div.stDownloadButton > button {
-    border-radius: 8px;
-    font-weight: 600;
+div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.05) !important;
 }
+
+/* [7] 버튼 (토스 시그니처 라운드 버튼) */
+div.stButton > button, div.stDownloadButton > button {
+    border-radius: 12px !important;
+    padding: 10px 20px !important;
+    font-size: 14.5px !important;
+    font-weight: 600 !important;
+    border: 1px solid #E5E8EB !important;
+    background-color: #FFFFFF !important;
+    color: #333D4B !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03) !important;
+    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+div.stButton > button:hover, div.stDownloadButton > button:hover {
+    background-color: #F2F4F6 !important;
+    border-color: #D1D6DB !important;
+    color: #191F28 !important;
+    transform: translateY(-1px);
+}
+/* Primary 버튼 (토스 블루) */
+div.stButton > button[kind="primary"], div.stDownloadButton > button[kind="primary"] {
+    background-color: #3182F6 !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    box-shadow: 0 4px 14px rgba(49, 130, 246, 0.3) !important;
+}
+div.stButton > button[kind="primary"]:hover, div.stDownloadButton > button[kind="primary"]:hover {
+    background-color: #1B64DA !important;
+    box-shadow: 0 6px 18px rgba(49, 130, 246, 0.4) !important;
+    transform: translateY(-2px);
+}
+
+/* [8] 텍스트 입력창 & 셀렉트박스 */
+div[data-baseweb="input"], div[data-baseweb="select"] {
+    border-radius: 12px !important;
+    border-color: #E5E8EB !important;
+    background-color: #F9FAFB !important;
+    transition: all 0.2s ease;
+}
+div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within {
+    border-color: #3182F6 !important;
+    background-color: #FFFFFF !important;
+    box-shadow: 0 0 0 3px rgba(49, 130, 246, 0.12) !important;
+}
+
+/* [9] 탭 (Apple 세그먼트 컨트롤 스타일) */
+div[data-testid="stTabs"] div[role="tablist"] {
+    background-color: #EFEFEF;
+    padding: 4px;
+    border-radius: 14px;
+    gap: 4px;
+}
+div[data-testid="stTabs"] button[role="tab"] {
+    border-radius: 10px;
+    padding: 8px 18px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #6B7684;
+    border: none !important;
+    transition: all 0.18s ease;
+}
+div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+    background-color: #FFFFFF !important;
+    color: #191F28 !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* [10] 배지 & 칩 스타일 */
+.toss-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+.badge-blue { background: #E8F3FF; color: #1B64DA; }
+.badge-green { background: #E6F8F0; color: #059669; }
+.badge-gray { background: #F2F4F6; color: #4E5968; }
+.badge-orange { background: #FFF4E5; color: #D97706; }
 
 /* 제목 타이포그래피 정돈 */
 h1 {
-    font-size: 1.65rem !important;
+    font-size: 1.7rem !important;
     font-weight: 700 !important;
-    letter-spacing: -0.02em !important;
+    letter-spacing: -0.03em !important;
     color: #191F28 !important;
+    margin-bottom: 0.5rem !important;
 }
 h2 {
     font-size: 1.35rem !important;
     font-weight: 700 !important;
     color: #191F28 !important;
+    letter-spacing: -0.02em !important;
 }
 h3 {
     font-size: 1.15rem !important;
@@ -1466,8 +1588,9 @@ h3 {
 
 /* 알림 및 배너 */
 div[data-testid="stAlert"] {
-    border-radius: 10px;
+    border-radius: 14px;
     border: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.03);
 }
 </style>
 """, unsafe_allow_html=True)
