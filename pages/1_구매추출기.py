@@ -1456,11 +1456,22 @@ header[data-testid="stHeader"] {
     backdrop-filter: blur(12px) !important;
 }
 
-/* [5] 메인 콘텐츠 여백 최적화 */
+/* [5] 메인 콘텐츠 브라우저 화면 맞춤 (반응형 100% 풀 와이드) */
 .block-container {
     padding-top: 2rem !important;
     padding-bottom: 5rem !important;
-    max-width: 1220px !important;
+    padding-left: 2.5rem !important;
+    padding-right: 2.5rem !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+@media (max-width: 992px) {
+    .block-container {
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
+    }
 }
 
 /* [6] 사이드바 토스 스타일 */
