@@ -990,36 +990,54 @@ def run_ai_analysis(files, req_type):
         extra_instruction = "🚨 이 건은 '공사' 건입니다. 첨부 서류 중 '시설공사 확인서' 또는 '장비설치 확인서'가 반드시 포함되어야 하므로 이를 꼼꼼히 확인하세요.\n"
     
     contents = [
-        f"🚨 [기준일] 오늘 날짜는 {today_str}입니다. 만료일자 계산 시 참고하세요.\n"
-        f"{extra_instruction}"
-        "분석 후 반드시 아래 형태의 JSON 형식으로만 응답해. 절대 마크다운(```json)이나 다른 텍스트를 넣지 마.\n"
-        "{\n"
-        '  "비교견적리스트": [ {"업체명": "A업체", "사업자번호": "123-45-67890", "제출금액": 10000}, {"업체명": "B업체", "사업자번호": "987-65-43210", "제출금액": 12000} ],\n'
-        '  "최저가판단과정": "위 비교견적리스트를 바탕으로 가장 금액이 낮은 업체를 최종 선정하는 과정을 짧게 작성",\n'
-        '  "수신자명확인": "첨부된 모든 견적서(비교견적서 포함)의 수신자가 모두 \'세종대학교 산학협력단\' 명의가 맞으면 \'예\', 하나라도 누락되거나 다르면 \'아니오(사유)\'",\n'
-        '  "만료일자": "유효기간 만료일자를 YYYY-MM-DD 형식으로 기재",\n'
-        '  "동일규격확인": "복수 견적서 간 동일 물품이면 \'예\', 다르면 \'아니오(사유)\', 1장뿐이면 \'단일견적\'",\n'
-        '  "사업자일치여부": "최저가(최종 선정) 견적서와 사업자등록증 상의 정보가 일치하면 \'예\', 다르면 \'아니오(사유)\'",\n'
-        '  "업체명": "첨부된 사업자등록증 상의 \'법인명(단체명)\' 또는 \'상호\'를 최우선으로 추출 (사업자등록증이 없는 경우 견적서의 상호명 추출)",\n'
-        '  "사업자번호": "최저가 업체의 사업자등록번호 (반드시 000-00-00000 형식)",\n'
-        '  "대표자명": "사업자등록증 상의 대표자 성명",\n'
-        '  "담당자": "최저가 업체의 견적 담당자명",\n'
-        '  "연락처": "최저가 업체 담당자의 010 전화번호 (없으면 대표번호)",\n'
-        '  "이메일": "최저가 업체의 이메일",\n'
-        '  "예금주": "통장사본의 예금주명",\n'
-        '  "계좌번호": "통장사본의 계좌번호",\n'
-        '  "총금액": "최종 선정된 업체의 견적 총액 (반드시 부가가치세/VAT 포함된 최종 합계 금액을 숫자로만 기재)",\n'
-        '  "공사확인서유무": "첨부 파일 중 \'시설공사\' 또는 \'장비설치 확인서\' 문서가 있으면 \'예\', 없으면 \'아니오\', 비슷한 문서가 있으면 \'확인요망\'",\n'
-        '  "품목리스트": [ {"품명": "품명 텍스트", "수량": 1, "단가": 1000, "금액": 1000} ]\n'
-        "}"
+        f"🚨 [기준일] 오늘 날짜는 {today_str}입니다. 만료일자 계산 시 참고하세요.\n",
+        f"{extra_instruction}",
+        """아래 지침에 따라 첨부된 문서들을 분석하고, 반드시 순수한 JSON 형식으로만 응답해. 절대 마크다운(```json)이나 다른 설명 텍스트를 넣지 마.
+
+■ [문서 자동 판별 및 추출 원칙 (파일명 무관)]:
+1. 첨부 파일명이 'ㅅㄷ', 'ㅌㅅ', '1', '스캔' 등 임의의 이름이더라도, 파일 본문의 양식/텍스트를 직접 보고 문서 역할을 구분할 것:
+   - [사업자등록증]: 국세청 양식, '등록번호', '법인명(상호)', '대표자', '개업연월일', '사업장소재지' 등이 적힌 서식.
+   - [통장사본]: 은행명, 예금주, 계좌번호가 적힌 통장 이미지/사본. (1개 PDF 내 여러 페이지에 사업자등록증과 통장사본이 함께 있는 경우 각 페이지를 개별 판별)
+   - [견적서/비교견적서]: 공급자 정보, 품목, 단가, 공급가액, 세액, 총금액이 적힌 견적 문서.
+   - [기안문/품의서/결재문서]: 대학/기관 내부 기안문, 시행일자, 결재선 등이 있는 문서는 내부 행정서류이므로 견적 비교 대상에서 제외할 것.
+2. [핵심] 첨부 문서 중 '사업자등록증'과 '통장사본' 양식이 단 1장이라도 발견되면, 견적서 최저가 선정 여부와 관계없이 해당 서류 본문의 정보(상호, 사업자번호, 대표자명, 예금주, 계좌번호)를 무조건 독립 추출하여 아래 JSON 필드에 정확히 채울 것.
+
+{
+  "사업자등록증_상호명": "첨부된 사업자등록증 상의 '법인명(단체명)' 또는 '상호' (사업자등록증이 없으면 견적서 상호)",
+  "사업자등록증_등록번호": "첨부된 사업자등록증 상의 사업자등록번호 (반드시 000-00-00000 형식)",
+  "사업자등록증_대표자명": "첨부된 사업자등록증 상의 대표자 성명",
+  "통장사본_예금주": "첨부된 통장사본 상의 예금주명",
+  "통장사본_계좌번호": "첨부된 통장사본 상의 계좌번호",
+  "통장사본_은행명": "첨부된 통장사본 상의 은행명",
+  "업체명": "최종 선정된 업체명 (사업자등록증 상호 우선)",
+  "사업자번호": "최종 선정 업체의 사업자번호 (사업자등록증 번호 우선, 000-00-00000 형식)",
+  "대표자명": "사업자등록증 상의 대표자 성명",
+  "담당자": "최저가 업체의 견적 담당자명",
+  "연락처": "최저가 업체 담당자의 010 전화번호 (없으면 대표번호)",
+  "이메일": "최저가 업체의 이메일",
+  "예금주": "통장사본의 예금주명",
+  "계좌번호": "통장사본의 계좌번호",
+  "비교견적리스트": [ {"업체명": "A업체", "사업자번호": "123-45-67890", "제출금액": 10000}, {"업체명": "B업체", "사업자번호": "987-65-43210", "제출금액": 12000} ],
+  "최저가판단과정": "위 비교견적리스트를 바탕으로 가장 금액이 낮은 업체를 최종 선정하는 과정을 짧게 작성",
+  "수신자명확인": "첨부된 모든 견적서(비교견적서 포함)의 수신자가 모두 '세종대학교 산학협력단' 명의가 맞으면 '예', 하나라도 누락되거나 다르면 '아니오(사유)'",
+  "만료일자": "유효기간 만료일자를 YYYY-MM-DD 형식으로 기재",
+  "동일규격확인": "복수 견적서 간 동일 물품이면 '예', 다르면 '아니오(사유)', 1장뿐이면 '단일견적'",
+  "사업자일치여부": "최저가 견적서와 사업자등록증 상의 정보가 일치하면 '예', 다르면 '아니오(사유)'",
+  "총금액": "최종 선정된 업체의 견적 총액 (반드시 부가가치세/VAT 포함된 최종 합계 금액을 숫자로만 기재)",
+  "공사확인서유무": "첨부 파일 중 '시설공사' 또는 '장비설치 확인서' 문서가 있으면 '예', 없으면 '아니오', 비슷한 문서가 있으면 '확인요망'",
+  "품목리스트": [ {"품명": "품명 텍스트", "수량": 1, "단가": 1000, "금액": 1000} ]
+}
+"""
     ]
-    
-    for f in files:
+
+    for idx, f in enumerate(files, 1):
         if "excel" in f.type or "spreadsheet" in f.type:
-            try: contents.append(f"엑셀 문서 내용:\n{pd.read_excel(f).to_csv(index=False)}")
+            try: contents.append(f"문서 {idx} (엑셀 파일명: {f.name}):\n{pd.read_excel(f).to_csv(index=False)}")
             except: pass
-        else: contents.append(types.Part.from_bytes(data=f.getvalue(), mime_type=f.type))
-            
+        else:
+            contents.append(f"문서 {idx} (파일명: {f.name})")
+            contents.append(types.Part.from_bytes(data=f.getvalue(), mime_type=f.type))
+
     gen_config = types.GenerateContentConfig(response_mime_type="application/json")
             
     fallback_chain = [
@@ -1920,6 +1938,23 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                     st.session_state[SESSION_AI_KEY] = rt
                     st.session_state['api_failed'] = False
                     st.session_state['ai_errors'] = []
+                    
+                    # 💡 [핵심] 위젯 세션 상태 강제 동기화 (Streamlit 렌더링 누락 완벽 방지)
+                    v_ven = rt.get("사업자등록증_상호명") or rt.get("업체명", "")
+                    v_biz = rt.get("사업자등록증_등록번호") or rt.get("사업자번호", "")
+                    v_rep = rt.get("담당자") or rt.get("사업자등록증_대표자명") or rt.get("대표자명", "")
+                    v_phn = rt.get("연락처", "")
+                    v_eml = rt.get("이메일", "")
+                    v_holder = rt.get("통장사본_예금주") or rt.get("예금주", "")
+                    v_acc = rt.get("통장사본_계좌번호") or rt.get("계좌번호", "")
+                    
+                    if v_ven: st.session_state["req_in_ven"] = v_ven
+                    if v_biz: st.session_state["req_in_biz"] = v_biz
+                    if v_rep: st.session_state["req_in_rep"] = v_rep
+                    if v_phn and v_phn != "미검출": st.session_state["req_in_phn"] = v_phn
+                    if v_eml and v_eml != "미검출" and not is_internal_sejong_email(v_eml): st.session_state["req_in_eml"] = v_eml
+                    if v_holder: st.session_state["req_acc_holder"] = v_holder
+                    if v_acc: st.session_state["req_acc_num"] = v_acc
                 else: 
                     handle_error("AI", "구글 AI 서버 응답 실패. 수동 입력 모드로 전환합니다.")
                     st.session_state['api_failed'] = True
@@ -2112,10 +2147,11 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
             if ai:
                 biz_check_list = []
                 
-                main_biz = ai.get('사업자번호', '')
+                main_biz = ai.get('사업자등록증_등록번호') or ai.get('사업자번호', '')
+                main_ven = ai.get('사업자등록증_상호명') or ai.get('업체명', '최종선정업체')
                 if not is_missing(main_biz):
                     ai['사업자번호'] = format_bizno(main_biz)
-                    biz_check_list.append({"name": ai.get('업체명', '최종선정업체'), "no": ai['사업자번호']})
+                    biz_check_list.append({"name": main_ven, "no": ai['사업자번호']})
                 else:
                     st.warning("⚠️ 최저가 업체의 사업자번호가 감지되지 않았습니다.")
 
@@ -2410,10 +2446,14 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         if ai_email and (ai_email == "미검출" or is_internal_sejong_email(ai_email)):
             ai_email = ""
 
+        def_ven = st.session_state.get("req_in_ven") or (ai.get('사업자등록증_상호명') or ai.get('업체명', '') if ai else '')
+        def_biz = st.session_state.get("req_in_biz") or (ai.get('사업자등록증_등록번호') or ai.get('사업자번호', '') if ai else '')
+        def_rep = st.session_state.get("req_in_rep") or (ai.get('담당자') or ai.get('사업자등록증_대표자명') or ai.get('대표자명', '') if ai else '')
+
         c_v1, c_v2, c_v3, c_v4, c_v5 = st.columns(5)
-        with c_v1: t_ven = st.text_input("업체명", value=ai.get('업체명', '') if ai else '', key="req_in_ven")
-        with c_v2: t_biz = st.text_input("사업자번호", value=ai.get('사업자번호', '') if ai else '', key="req_in_biz")
-        with c_v3: t_rep = st.text_input("업체담당자명", value=ai.get('담당자', '') if ai else '', key="req_in_rep")
+        with c_v1: t_ven = st.text_input("업체명", value=def_ven, key="req_in_ven")
+        with c_v2: t_biz = st.text_input("사업자번호", value=def_biz, key="req_in_biz")
+        with c_v3: t_rep = st.text_input("업체담당자명", value=def_rep, key="req_in_rep")
         with c_v4: t_phn = st.text_input("연락처", value=ai_phone, key="req_in_phn") 
         with c_v5: t_eml = st.text_input("이메일", value=ai_email, key="req_in_eml")
         
@@ -2435,11 +2475,14 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
             st.text_input("📍 [위치: 계좌 정보 소제목]", value=bank_t, key="live_ext_bank_title")
         else:
             st.write(f"#### {bank_t}")
+        def_holder = st.session_state.get("req_acc_holder") or (ai.get('통장사본_예금주') or ai.get('예금주', '') if ai else '')
+        def_acc = st.session_state.get("req_acc_num") or (ai.get('통장사본_계좌번호') or ai.get('계좌번호', '') if ai else '')
+
         c_b1, c_b2 = st.columns(2)
         with c_b1:
-            t_acc_holder = st.text_input("예금주 (수정 가능)", value=ai.get('예금주', '') if ai else '', key="req_acc_holder")
+            t_acc_holder = st.text_input("예금주 (수정 가능)", value=def_holder, key="req_acc_holder")
         with c_b2:
-            t_acc_num = st.text_input("계좌번호 (수정 가능)", value=ai.get('계좌번호', '') if ai else '', key="req_acc_num")
+            t_acc_num = st.text_input("계좌번호 (수정 가능)", value=def_acc, key="req_acc_num")
 
         st.divider()
         if st.button("💾 현재 분석 내역을 시스템(DB)에 저장하기", type="primary", width="stretch"):
