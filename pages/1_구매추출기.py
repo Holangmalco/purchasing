@@ -704,19 +704,36 @@ def get_accurate_total(text, keyword=""):
         if val >= 1000 or val == 0: clean_numbers.append(val)
     return max(clean_numbers) if clean_numbers else 0
 
-def guess_category_by_keyword(name, price):
+def check_bipum_qualify(name, unit_price, erp_cat=""):
     clean_name = name.replace(" ", "").lower()
-    consumable_kws = ['시약', '용액', '항체', '키트', 'kit', '튜브', '팁', '케이블', '부품', '커버', '케이스', '필터', '토너', '잉크', '용지', '리필', '건전지', '배터리', '소모품']
-    if any(kw in clean_name for kw in consumable_kws): return "소모품"
-        
-    fixture_kws = ['책상', '의자', '파티션', '캐비닛', '수납장', '테이블', '책장', '칠판', '소파', '침대', '블라인드']
-    if any(kw in clean_name for kw in fixture_kws): return "집기"
-        
-    machine_kws = ['서버', 'pc', '데스크탑', '노트북', '모니터', '분석기', '현미경', '측정기', '펌프', '레이저', '냉장고', '카메라', '프린터', '라우터', '스위치', '오실로스코프']
-    if any(kw in clean_name for kw in machine_kws): return "기계기구"
-        
-    if price >= 1000000: return "비품(분류확인요망)"
-    return "분류확인요망"
+    clean_erp = erp_cat.replace(" ", "").lower()
+    
+    consumable_kws = ['시약', '용액', '항체', '키트', 'kit', '튜브', '팁', '케이블', '부품', '커버', '케이스', '필터', '토너', '잉크', '용지', '리필', '건전지', '배터리', '소모품', '소모']
+    fixture_kws = ['책상', '의자', '파티션', '캐비닛', '수납장', '테이블', '책장', '칠판', '소파', '침대', '블라인드', '집기', '서랍장', '옷장', '진열대']
+    machine_kws = ['서버', 'pc', '데스크탑', '노트북', '모니터', '분석기', '현미경', '측정기', '펌프', '레이저', '냉장고', '카메라', '프린터', '라우터', '스위치', '오실로스코프', '센서', 'sensor', '장비', '기기', '기구', '시스템', 'system', 'tv', '텔레비전', '스탠드', '소프트웨어', 'sw', 's/w', '라이선스', '라이센스', '구독']
+    
+    is_fixture = any(kw in clean_name or kw in clean_erp for kw in fixture_kws)
+    is_machine = any(kw in clean_name or kw in clean_erp for kw in machine_kws)
+    
+    # 1. 집기비품 15만원 이상 -> 비품 자격
+    if is_fixture and unit_price >= 150000:
+        return True
+    # 2. 기계기구 30만원 이상 -> 비품 자격
+    if is_machine and unit_price >= 300000:
+        return True
+    # 3. 소모품 명시 키워드가 아니면서 단가 30만원 이상인 경우 -> 비품 자격
+    if unit_price >= 300000 and not any(kw in clean_name for kw in consumable_kws):
+        return True
+    return False
+
+def guess_category_by_keyword(name, price, unit_price=0, reg_status=""):
+    up = unit_price if unit_price > 0 else price
+    is_qualify = check_bipum_qualify(name, up)
+    if is_qualify:
+        if "아니오" in reg_status and "구성품" in name:
+            return "구성품"
+        return "비품"
+    return "소모품"
 
 def is_tax_exempt_project(raw_req):
     if not raw_req: return False
@@ -912,67 +929,77 @@ def parse_service_erp(text, force_category):
             continue
     return items, valid_format
 
-def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_text="", raw_req_text=""):
+def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_text="", raw_req_text="", ai_res=None):
     rules_triggered = []
-    if "간접비" in raw_finance_text: rules_triggered.append("간접비건 확인")
     
-    # 💡 [Part 1 - 5번] 부가세 0원 및 면세 판별 로직 결재의견 자동 반영
-    if is_vat_zero_in_finance(raw_req_text, raw_finance_text):
-        if is_tax_exempt_project(raw_req_text):
-            rules_triggered.append("면세 과제 확인 (부가세 0원 정상)")
-        else:
-            rules_triggered.append("부가세 0원 확인필요 (과세 과제 여부 검토)")
-
+    # 1. 간접비건 확인 (재원내역 또는 요청서 텍스트)
+    if "간접비" in raw_finance_text or "간접비" in raw_req_text:
+        rules_triggered.append("간접비건")
+        
     is_goods = "물품" in req_type
     is_service = "용역" in req_type or "공사" in req_type
     
-    if is_goods and any(i['unit'].lower() not in ['', 'u'] for i in item_list): rules_triggered.append("단위 'u'로 수정 필요")
-    if is_service and any(i['unit'] not in ['', '식'] for i in item_list): rules_triggered.append("단위 '식'으로 수정 필요")
+    # 2. 단위 수정 확인
+    if is_goods and any(i.get('unit', '').lower() not in ['', 'u'] for i in item_list):
+        rules_triggered.append("단위 'u'로 수정 필요")
+    if is_service and any(i.get('unit', '') not in ['', '식'] for i in item_list):
+        rules_triggered.append("단위 '식'으로 수정 필요")
 
-    expected_cats = []
-    for itm in item_list:
-        erp_cat = itm.get('category', '공란').strip()
-        reg_status = itm.get('reg_status', '')
-        price = itm.get('price', 0)
-        unit_price = itm.get('unit_price', 0)
-        name = itm.get('name', '').upper()
-
-        is_sw = any(kw in name for kw in ['소프트웨어', 'SW', 'S/W', '라이선스', '구독']) or '소프트웨어' in erp_cat
-        is_consumable_kw = any(kw in name.lower() for kw in ['시약', '용액', '항체', '키트', 'kit', '튜브', '팁', '필터', '소모품'])
-
-        if is_service:
-            exp_cat = "공사, 용역" if "공사" in req_type else "용역"
-        elif unit_price > 0 and unit_price <= 150000:
-            exp_cat = "소모품"
-            if "예" in reg_status: rules_triggered.append("물품등록여부 변경필요")
-        elif is_sw and (price <= 2000000 or any(kw in name for kw in ['1년', '12개월', '1YR', '1 YR'])):
-            exp_cat = "소모품"
-        elif "예" in reg_status:
-            exp_cat = "비품"
-        elif erp_cat in ['', '공란'] or erp_cat == '비품':
-            exp_cat = guess_category_by_keyword(name, price)
-        else:
-            exp_cat = erp_cat if erp_cat else "소모품"
-
-        expected_cats.append(exp_cat)
-
-        # 💡 [Part 1 - 5번] 단가 15만원 초과 비품인데 물품 미등록인 경우 경고
-        if is_goods and unit_price > 150000 and "아니오" in reg_status and not is_consumable_kw and not is_sw:
-            rules_triggered.append("물품등록여부 확인필요 (단가 15만원 초과 미등록)")
-
-        if erp_cat in ['', '공란']:
-            rules_triggered.append("물품분류구분 입력필요")
-        else:
-            is_erp_bipum = "비품" in erp_cat or "기계기구" in erp_cat or "집기" in erp_cat
-            is_exp_bipum = "비품" in exp_cat or "기계기구" in exp_cat or "집기" in exp_cat
+    # 3. 물품분류구분 판정 및 규칙
+    has_bipum = False
+    has_guseong = False
+    
+    if is_service:
+        final_category = "공사" if "공사" in req_type else "용역"
+    elif not item_list:
+        final_category = "소모품"
+    else:
+        for itm in item_list:
+            erp_cat = itm.get('category', '공란').strip()
+            reg_status = itm.get('reg_status', '')
+            unit_price = itm.get('unit_price', 0)
+            price = itm.get('price', 0)
+            up = unit_price if unit_price > 0 else price
+            name = itm.get('name', '')
             
-            if (is_erp_bipum and exp_cat == "소모품") or ("소모품" in erp_cat and is_exp_bipum):
-                rules_triggered.append("물품분류구분 변경필요")
-            elif exp_cat == "분류확인요망" or "확인요망" in exp_cat:
-                rules_triggered.append("물품분류구분 확인필요")
+            is_bipum = check_bipum_qualify(name, up, erp_cat)
+            if is_bipum:
+                if "아니오" in reg_status and "예" not in reg_status and ("구성품" in erp_cat or "구성품" in name):
+                    has_guseong = True
+                else:
+                    has_bipum = True
+            
+            # ERP 상 물품분류구분이 공란인 경우
+            if erp_cat in ['', '공란']:
+                rules_triggered.append("물품분류구분 입력필요")
+            else:
+                # ERP 상 분류와 판정 기준 불일치 시
+                if "소모품" in erp_cat and is_bipum:
+                    rules_triggered.append("물품분류구분 변경필요")
+                elif ("비품" in erp_cat or "기계기구" in erp_cat or "집기" in erp_cat) and not is_bipum:
+                    rules_triggered.append("물품분류구분 변경필요")
+            
+            # 물품등록여부 확인/변경
+            if not is_bipum and "예" in reg_status:
+                rules_triggered.append("물품등록여부 변경필요")
+            elif is_bipum and "아니오" in reg_status and "구성품" not in erp_cat:
+                rules_triggered.append("물품등록여부 확인필요")
 
-    clean_cats = [c.replace("(분류확인요망)", "").replace("분류확인요망", "확인필요") for c in expected_cats]
-    final_category = " / ".join(list(dict.fromkeys(clean_cats))) if clean_cats else "소모품"
+        if has_bipum:
+            final_category = "비품"
+        elif has_guseong:
+            final_category = "구성품"
+        else:
+            final_category = "소모품"
+
+    # 4. 업체담당자 정보 확인
+    if ai_res:
+        ai_eml = ai_res.get('이메일', '')
+        ai_phn = ai_res.get('연락처', '')
+        is_bad_eml = not ai_eml or ai_eml in ["미검출", "없음"] or is_internal_sejong_email(ai_eml)
+        is_bad_phn = not ai_phn or ai_phn in ["미검출", "없음"]
+        if is_bad_eml or is_bad_phn:
+            rules_triggered.append("업체담당자 정보 확인필요")
 
     unique_rules = list(dict.fromkeys(rules_triggered))
     issues_text = " - 특이사항 없음" if not unique_rules else "\n".join([f" - {r}" for r in unique_rules])
@@ -2422,7 +2449,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         
         st.divider()
         st.write("#### ✍️ 결재 의견 (자동 생성)")
-        st.code(generate_opinion(req_type, con_type, total_amt, item_list, raw_fin, raw_req), language="text")
+        st.code(generate_opinion(req_type, con_type, total_amt, item_list, raw_fin, raw_req, ai_res=ai), language="text")
         
         st.divider()
         
