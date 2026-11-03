@@ -1398,25 +1398,56 @@ def parse_smart_contact_memo(text):
 # ==========================================
 
 # ---------------------------------------------------------
-# 🎨 [UI 개선] 토스 & 애플 스타일 미니멀 모던 CSS 주입
+# 🎨 [UI 개선] 토스 & 애플 스타일 미니멀 모던 CSS 주입 (아이콘 폰트 완벽 보호)
 # ---------------------------------------------------------
 st.markdown("""
 <style>
-/* [1] Pretendard 웹폰트 로드 & 전역 적용 */
+/* [1] Pretendard 웹폰트 로드 */
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css");
 
-* {
-    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif !important;
-    letter-spacing: -0.025em;
-}
-
-/* [2] 전체 배경색 (소프트 미색 그레이) */
-.stApp {
+/* [2] 텍스트 요소에만 Pretendard 적용 (아이콘 폰트 절대 건드리지 않음) */
+html, body, .stApp {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+    letter-spacing: -0.02em;
     background-color: #F8F9FA !important;
     color: #191F28;
 }
 
-/* [3] 스트림릿 기본 상단 무지개 바 및 불필요한 헤더 숨김 */
+/* 텍스트 요소 개별 적용 */
+h1, h2, h3, h4, h5, h6, p, label:not([class*="material"]),
+div[data-testid="stMarkdownContainer"] p,
+div[data-testid="stMarkdownContainer"] span:not([data-testid="stIconMaterial"]):not([class*="material"]),
+div.stButton > button,
+div.stDownloadButton > button,
+input, textarea, select {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif !important;
+}
+
+/* [3] Material Symbols 및 스트림릿 기본 아이콘 폰트 완벽 보존 */
+span[data-testid="stIconMaterial"],
+[class*="material-symbols"],
+[class*="material-icons"],
+[data-testid*="Icon"],
+[data-testid*="icon"],
+div[data-testid="stSidebarCollapseButton"] button span,
+div[data-testid="stSidebarExpandButton"] button span,
+div[data-testid="stFileUploader"] button span,
+div[data-testid="stPopover"] button span {
+    font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+    font-feature-settings: "liga" 1 !important;
+    font-style: normal !important;
+    font-weight: normal !important;
+    letter-spacing: normal !important;
+    line-height: 1 !important;
+    text-transform: none !important;
+    display: inline-block !important;
+    white-space: nowrap !important;
+    word-wrap: normal !important;
+    direction: ltr !important;
+    -webkit-font-smoothing: antialiased !important;
+}
+
+/* [4] 상단 무지개 바 및 불필요한 장식 숨김 */
 div[data-testid="stDecoration"] {
     display: none !important;
 }
@@ -1425,37 +1456,35 @@ header[data-testid="stHeader"] {
     backdrop-filter: blur(12px) !important;
 }
 
-/* [4] 메인 콘텐츠 여백 최적화 */
+/* [5] 메인 콘텐츠 여백 최적화 */
 .block-container {
     padding-top: 2rem !important;
     padding-bottom: 5rem !important;
     max-width: 1220px !important;
 }
 
-/* [5] 사이드바 토스 스타일 */
+/* [6] 사이드바 토스 스타일 */
 section[data-testid="stSidebar"] {
     background-color: #FFFFFF !important;
     border-right: 1px solid #ECEFF2 !important;
 }
-section[data-testid="stSidebar"] .block-container {
-    padding-top: 2rem !important;
-    padding-left: 1.25rem !important;
-    padding-right: 1.25rem !important;
+div[data-testid="stSidebarUserContent"] {
+    padding-top: 1.5rem !important;
 }
 
 /* 사이드바 메뉴 캡슐 버튼 */
 section[data-testid="stSidebar"] div[role="radiogroup"] {
-    gap: 6px;
+    gap: 4px;
 }
 section[data-testid="stSidebar"] div[role="radiogroup"] label {
     background-color: transparent;
-    padding: 12px 16px;
+    padding: 10px 14px;
     border-radius: 12px;
-    font-size: 15px;
+    font-size: 14.5px;
     font-weight: 500;
     color: #4E5968;
-    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
-    margin-bottom: 4px;
+    transition: all 0.15s ease-in-out;
+    margin-bottom: 2px;
     border: 1px solid transparent;
     cursor: pointer;
 }
@@ -1463,28 +1492,28 @@ section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
     background-color: #F2F4F6;
     color: #191F28;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] label[data-checked="true"] {
+section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
     background-color: #E8F3FF !important;
     color: #1B64DA !important;
     font-weight: 700 !important;
     border: 1px solid #D0E4FF !important;
 }
 
-/* [6] 플로팅 카드 컨테이너 (애플/토스 시그니처 카드) */
+/* [7] 플로팅 카드 컨테이너 (애플/토스 시그니처 카드) */
 div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #FFFFFF !important;
     border-radius: 18px !important;
     border: 1px solid #EAECEF !important;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03) !important;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.03) !important;
     padding: 22px 26px !important;
     margin-bottom: 1.2rem !important;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: box-shadow 0.2s ease;
 }
 div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"]:hover {
-    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.05) !important;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.05) !important;
 }
 
-/* [7] 버튼 (토스 시그니처 라운드 버튼) */
+/* [8] 버튼 (토스 시그니처 라운드 버튼) */
 div.stButton > button, div.stDownloadButton > button {
     border-radius: 12px !important;
     padding: 10px 20px !important;
@@ -1515,20 +1544,19 @@ div.stButton > button[kind="primary"]:hover, div.stDownloadButton > button[kind=
     transform: translateY(-2px);
 }
 
-/* [8] 텍스트 입력창 & 셀렉트박스 */
-div[data-baseweb="input"], div[data-baseweb="select"] {
+/* [9] 텍스트 입력창 & 텍스트에어리어 & 셀렉트박스 */
+div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="textarea"] {
     border-radius: 12px !important;
     border-color: #E5E8EB !important;
-    background-color: #F9FAFB !important;
+    background-color: #FFFFFF !important;
     transition: all 0.2s ease;
 }
-div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within {
+div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within, div[data-baseweb="textarea"]:focus-within {
     border-color: #3182F6 !important;
-    background-color: #FFFFFF !important;
     box-shadow: 0 0 0 3px rgba(49, 130, 246, 0.12) !important;
 }
 
-/* [9] 탭 (Apple 세그먼트 컨트롤 스타일) */
+/* [10] 탭 (Apple 세그먼트 컨트롤 스타일) */
 div[data-testid="stTabs"] div[role="tablist"] {
     background-color: #EFEFEF;
     padding: 4px;
@@ -1551,7 +1579,7 @@ div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
 }
 
-/* [10] 배지 & 칩 스타일 */
+/* [11] 배지 & 칩 스타일 */
 .toss-badge {
     display: inline-flex;
     align-items: center;
@@ -1723,17 +1751,18 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
     else:
         st.write(f"### {step1_t}")
     
-    sub1_t = get_ui_text("ext_sub1_title", "📂 1. 기본 정보 선택")
-    if is_live:
-        st.text_input("📍 [위치: 1번 항목 소제목]", value=sub1_t, key="live_ext_sub1_title")
-    else:
-        st.markdown(f"#### {sub1_t}")
-    c_type1, c_type2 = st.columns(2)
+    with st.container(border=True):
+        sub1_t = get_ui_text("ext_sub1_title", "📂 1. 기본 정보 선택")
+        if is_live:
+            st.text_input("📍 [위치: 1번 항목 소제목]", value=sub1_t, key="live_ext_sub1_title")
+        else:
+            st.markdown(f"#### {sub1_t}")
+        c_type1, c_type2 = st.columns(2)
 
-    with c_type1:
-        req_type = st.radio("구매 유형", ["📦 물품", "🛠️ 용역", "🏗️ 공사"], horizontal=True, key="saved_req_type", on_change=on_critical_condition_change)
-    with c_type2:
-        con_type = st.radio("계약 방식", ["비교견적", "수의계약"], horizontal=True, key="saved_con_type", on_change=on_critical_condition_change)
+        with c_type1:
+            req_type = st.radio("구매 유형", ["📦 물품", "🛠️ 용역", "🏗️ 공사"], horizontal=True, key="saved_req_type", on_change=on_critical_condition_change)
+        with c_type2:
+            con_type = st.radio("계약 방식", ["비교견적", "수의계약"], horizontal=True, key="saved_con_type", on_change=on_critical_condition_change)
 
     col_in1, col_in2 = st.columns(2)
     with col_in1:
@@ -1785,7 +1814,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
     btn_ana_t = get_ui_text("ext_btn_analyze", "🚀 전체 데이터 통합 분석 시작")
     if is_live:
         st.text_input("📍 [위치: 분석 버튼 문구]", value=btn_ana_t, key="live_ext_btn_analyze")
-    col_btn1, col_btn2 = st.columns(2)
+    col_btn1, col_btn2 = st.columns([7, 3])
     with col_btn1: start_all = st.button(btn_ana_t, width="stretch", type="primary")
         
     def reset_all_state():
@@ -2464,7 +2493,7 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
 
     st.markdown("<br>", unsafe_allow_html=True) 
 
-    col_btn1, col_btn2 = st.columns(2)
+    col_btn1, col_btn2 = st.columns([7, 3])
     btn_lbl = get_ui_text("btn_load_contract", "계약 데이터 불러오기")
     if is_live:
         st.text_input("📍 [위치: 계약 불러오기 버튼]", value=btn_lbl, key="live_btn_load_contract")
