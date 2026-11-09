@@ -1913,6 +1913,95 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
     col_btn1, col_btn2 = st.columns([7, 3])
     with col_btn1: start_all = st.button(btn_ana_t, width="stretch", type="primary")
         
+    def execute_save_analysis():
+        cur_req = st.session_state.get("p_req", "")
+        cur_fin = st.session_state.get("p_fin", "")
+        cur_itm = st.session_state.get("p_itm", "")
+        cur_req_type = st.session_state.get("saved_req_type", "📦 물품")
+        cur_con_type = st.session_state.get("saved_con_type", "비교견적")
+        
+        b_data = extract_base_info(cur_req)
+        if not b_data or not b_data.get('req_no'):
+            return False, "구매요구번호를 찾을 수 없습니다."
+            
+        ai_data = st.session_state.get(SESSION_AI_KEY, {})
+        if isinstance(ai_data, list):
+            ai_data = ai_data[0] if len(ai_data) > 0 else {}
+            
+        force_cat = "용역" if "용역" in cur_req_type else ("공사" if "공사" in cur_req_type else None)
+        if force_cat:
+            items, _ = parse_service_erp(cur_itm, force_cat)
+        else:
+            items, _ = parse_goods_erp(cur_itm)
+            
+        v_ven = st.session_state.get("req_in_ven") or (ai_data.get('사업자등록증_상호명') or ai_data.get('업체명', '') if ai_data else '')
+        v_biz = st.session_state.get("req_in_biz") or (ai_data.get('사업자등록증_등록번호') or ai_data.get('사업자번호', '') if ai_data else '')
+        v_rep = st.session_state.get("req_in_rep") or (ai_data.get('담당자') or ai_data.get('사업자등록증_대표자명') or ai_data.get('대표자명', '') if ai_data else '')
+        v_phn = st.session_state.get("req_in_phn") or (ai_data.get('연락처', '') if ai_data else '')
+        v_eml = st.session_state.get("req_in_eml") or (ai_data.get('이메일', '') if ai_data else '')
+        v_holder = st.session_state.get("req_acc_holder") or (ai_data.get('통장사본_예금주') or ai_data.get('예금주', '') if ai_data else '')
+        v_acc = st.session_state.get("req_acc_num") or (ai_data.get('통장사본_계좌번호') or ai_data.get('계좌번호', '') if ai_data else '')
+
+        item_mgrs = []
+        for itm in items:
+            if itm.get('contact') and "없음" not in itm['contact']:
+                item_mgrs.append(itm['contact'])
+        unique_item_mgrs = list(dict.fromkeys(item_mgrs))
+        final_item_mgr = " / ".join(unique_item_mgrs) if unique_item_mgrs else "⚠️ 미기재"
+
+        vendor_mgr_info = f"{v_rep} / {v_phn} / {v_eml}"
+
+        item_remarks = []
+        for itm in items:
+            rem = itm.get('remark', '').strip()
+            if rem and rem not in ['-', '없음', '해당없음']:
+                item_remarks.append(f"{itm['name']}: {rem}" if len(items) > 1 else rem)
+        final_remarks = " / ".join(item_remarks) if item_remarks else ""
+        
+        saved_ai = dict(ai_data) if ai_data else {}
+        saved_ai["업체명"] = v_ven
+        saved_ai["사업자번호"] = v_biz
+        saved_ai["담당자"] = v_rep
+        saved_ai["연락처"] = v_phn
+        saved_ai["이메일"] = v_eml
+        saved_ai["예금주"] = v_holder
+        saved_ai["계좌번호"] = v_acc
+        st.session_state[SESSION_AI_KEY] = saved_ai
+
+        t_amt = get_accurate_total(cur_fin, "총액")
+        if t_amt == 0 and items:
+            t_amt = sum(itm.get('price', 0) for itm in items)
+
+        raw_to_save = {
+            "req_input": cur_req, "fin_input": cur_fin, "itm_input": cur_itm, "ai_res": saved_ai, 
+            "req_type": cur_req_type, "con_type": cur_con_type,
+            "item_list": items, "remarks": final_remarks
+        }
+        
+        meta_to_save = {
+            "요청분석일자": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "구매요구번호": b_data['req_no'],
+            "과제번호": b_data['p_no'],
+            "구매요청액": f"{t_amt:,}원",
+            "연구책임자정보": b_data['pi_formatted'], 
+            "물품담당자": final_item_mgr,               
+            "업체명": v_ven,
+            "업체담당자정보": vendor_mgr_info,
+            "업체담당자 정보": vendor_mgr_info,
+            "사업자번호": v_biz,
+            "계좌번호": v_acc,
+            "예금주": v_holder,
+            "비고사항": final_remarks,
+            "물품비고": final_remarks,
+            "연구책임자_성명": b_data['pi_name'],
+            "연구책임자_학과": b_data['pi_dept'],
+            "연구책임자_이메일": b_data['pi_email']
+        }
+        
+        save_to_cache(b_data['req_no'], meta_to_save, raw_to_save)
+        st.session_state['is_saved'] = True
+        return True, b_data['req_no']
+
     def reset_all_state():
         st.session_state["p_req"] = ""  
         st.session_state["p_fin"] = ""
@@ -1930,17 +2019,28 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
     @st.dialog("🚨 데이터 초기화 경고")
     def reset_warning_popup():
         st.error("아직 분석 내역을 시스템(DB)에 저장하지 않았습니다!\n지금 초기화하면 작업 중인 데이터가 **모두 날아갑니다.**")
-        st.info("정말 초기화하시겠습니까?")
-        c_warn1, c_warn2 = st.columns(2)
+        st.info("원하시는 처리 방식을 선택해 주세요.")
+        
+        c_warn1, c_warn2, c_warn3 = st.columns([1.2, 1.2, 0.8])
         
         with c_warn1:
-            if st.button("그래도 초기화 진행 🗑️", width="stretch"):
+            if st.button("💾 저장 후 초기화", width="stretch", type="primary"):
+                success, res_msg = execute_save_analysis()
+                if success:
+                    st.toast(f"✅ [{res_msg}] 데이터가 안전하게 저장된 후 초기화되었습니다.")
+                else:
+                    st.toast(f"⚠️ 저장 오류: {res_msg}")
+                reset_all_state()
+                st.rerun()
+                
+        with c_warn2:
+            if st.button("🗑️ 무시하고 초기화", width="stretch"):
                 reset_all_state()
                 st.rerun() 
                 
-        with c_warn2:
-            if st.button("취소 (저장하러 가기) 🔙", width="stretch", type="primary"):
-                st.rerun() 
+        with c_warn3:
+            if st.button("취소 🔙", width="stretch"):
+                st.rerun()
 
     with col_btn2: 
         if st.button("🔄 전체 초기화", width="stretch"):
@@ -2515,62 +2615,11 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
 
         st.divider()
         if st.button("💾 현재 분석 내역을 시스템(DB)에 저장하기", type="primary", width="stretch"):
-            item_mgrs = []
-            for itm in item_list:
-                if itm.get('contact') and "없음" not in itm['contact']:
-                    item_mgrs.append(itm['contact'])
-            unique_item_mgrs = list(dict.fromkeys(item_mgrs))
-            final_item_mgr = " / ".join(unique_item_mgrs) if unique_item_mgrs else "⚠️ 미기재"
-
-            vendor_mgr_info = f"{t_rep} / {t_phn} / {t_eml}"
-
-            # 비고사항 수집 및 통합 정리
-            item_remarks = []
-            for itm in item_list:
-                rem = itm.get('remark', '').strip()
-                if rem and rem not in ['-', '없음', '해당없음']:
-                    item_remarks.append(f"{itm['name']}: {rem}" if len(item_list) > 1 else rem)
-            final_remarks = " / ".join(item_remarks) if item_remarks else ""
-            
-            # 💡 [Part 1 - 3번] 수기 수정된 최종 업체/계좌 정보를 ai_res에도 동기화하여 저장!
-            saved_ai = dict(ai) if ai else {}
-            saved_ai["업체명"] = t_ven
-            saved_ai["사업자번호"] = t_biz
-            saved_ai["담당자"] = t_rep
-            saved_ai["연락처"] = t_phn
-            saved_ai["이메일"] = t_eml
-            saved_ai["예금주"] = t_acc_holder
-            saved_ai["계좌번호"] = t_acc_num
-            st.session_state[SESSION_AI_KEY] = saved_ai
-
-            raw_to_save = {
-                "req_input": raw_req, "fin_input": raw_fin, "itm_input": raw_itm, "ai_res": saved_ai, "req_type": req_type, "con_type": con_type,
-                "item_list": item_list, "remarks": final_remarks
-            }
-            
-            meta_to_save = {
-                "요청분석일자": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "구매요구번호": base_data['req_no'],
-                "과제번호": base_data['p_no'],
-                "구매요청액": f"{total_amt:,}원",
-                "연구책임자정보": base_data['pi_formatted'], 
-                "물품담당자": final_item_mgr,               
-                "업체명": t_ven,
-                "업체담당자정보": vendor_mgr_info,
-                "업체담당자 정보": vendor_mgr_info,
-                "사업자번호": t_biz,
-                "계좌번호": t_acc_num,
-                "예금주": t_acc_holder,
-                "비고사항": final_remarks,
-                "물품비고": final_remarks,
-                "연구책임자_성명": base_data['pi_name'],
-                "연구책임자_학과": base_data['pi_dept'],
-                "연구책임자_이메일": base_data['pi_email']
-            }
-            
-            save_to_cache(base_data['req_no'], meta_to_save, raw_to_save)
-            st.session_state['is_saved'] = True
-            st.success(f"✅ 구매요구번호 [{base_data['req_no']}] 건의 핵심 데이터가 로컬 및 구글 시트에 안전하게 저장되었습니다! '분석내용 불러오기' 메뉴에서 확인 가능합니다.")
+            success, res_msg = execute_save_analysis()
+            if success:
+                st.success(f"✅ 구매요구번호 [{res_msg}] 건의 핵심 데이터가 로컬 및 구글 시트에 안전하게 저장되었습니다! '분석내용 불러오기' 메뉴에서 확인 가능합니다.")
+            else:
+                st.error(f"❌ 저장 실패: {res_msg}")
 
 # ----------------- [2. 구매계약 분석 및 발주서 자동 생성] -----------------
 elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구매계약관리", "구매계약관리", "🤝 구매계약 분석"]:
