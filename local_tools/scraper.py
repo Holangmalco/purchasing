@@ -104,7 +104,7 @@ def check_credentials(interactive=True):
                     ef.write(f"\nGEMINI_API_KEY={GEMINI_KEY}\n")
                 print("[+] API Key가 저장되었습니다.\n")
             except: pass
-            ai_client = genai.Client(api_key=GEMINI_KEY)
+            ai_client = genai.Client(api_key=GEMINI_KEY, http_options={"api_version": "v1beta"})
 
     global BASE_TARGET_DIR, TEMP_DL_DIR
     if not os.getenv("TARGET_DIR") and interactive:
@@ -131,7 +131,7 @@ def check_credentials(interactive=True):
             except: pass
     return True
 
-ai_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
+ai_client = genai.Client(api_key=GEMINI_KEY, http_options={"api_version": "v1beta"}) if GEMINI_KEY else None
 
 # =================================================================
 # 2. 지정된 업무 기본 저장 경로 세팅 (사용자 설정 / 환경변수 반영)
@@ -935,7 +935,7 @@ def launch_scraper_gui():
         os.makedirs(TEMP_DL_DIR, exist_ok=True)
         if GEMINI_KEY:
             try:
-                ai_client = genai.Client(api_key=GEMINI_KEY)
+                ai_client = genai.Client(api_key=GEMINI_KEY, http_options={"api_version": "v1beta"})
             except Exception:
                 pass
 
@@ -1014,7 +1014,7 @@ def launch_scraper_gui():
         os.makedirs(TEMP_DL_DIR, exist_ok=True)
         if GEMINI_KEY:
             try:
-                ai_client = genai.Client(api_key=GEMINI_KEY)
+                ai_client = genai.Client(api_key=GEMINI_KEY, http_options={"api_version": "v1beta"})
             except Exception:
                 pass
 

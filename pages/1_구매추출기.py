@@ -281,7 +281,7 @@ if missing_keys:
     )
     st.stop()
 
-ai_client = genai.Client(api_key=API_KEY)
+ai_client = genai.Client(api_key=API_KEY, http_options={"api_version": "v1beta"})
 
 INSPECTOR_INFO = APP_CONFIG.get("inspector_info", DEFAULT_APP_CONFIG["inspector_info"])
 BUYER_STAFF = APP_CONFIG.get("buyer_staff", DEFAULT_APP_CONFIG["buyer_staff"])
