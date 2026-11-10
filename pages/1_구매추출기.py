@@ -933,9 +933,24 @@ def check_bipum_qualify(name, unit_price, erp_cat=""):
     clean_name = name.replace(" ", "").lower()
     clean_erp = erp_cat.replace(" ", "").lower()
     
+    # 💡 '시약대', '시약장' 등은 소모품(시약)이 아니라 실험실 집기/비품이므로 소모품 판별 시 예외 처리
+    name_for_consumable = clean_name
+    for safe_kw in ['시약대', '시약장', '시약보관', '시약선반', '시약함']:
+        name_for_consumable = name_for_consumable.replace(safe_kw, "")
+
     consumable_kws = ['시약', '용액', '항체', '키트', 'kit', '튜브', '팁', '케이블', '부품', '커버', '케이스', '필터', '토너', '잉크', '용지', '리필', '건전지', '배터리', '소모품', '소모']
-    fixture_kws = ['책상', '의자', '파티션', '캐비닛', '수납장', '테이블', '책장', '칠판', '소파', '침대', '블라인드', '집기', '서랍장', '옷장', '진열대']
-    machine_kws = ['서버', 'pc', '데스크탑', '노트북', '모니터', '분석기', '현미경', '측정기', '펌프', '레이저', '냉장고', '카메라', '프린터', '라우터', '스위치', '오실로스코프', '센서', 'sensor', '장비', '기기', '기구', '시스템', 'system', 'tv', '텔레비전', '스탠드', '소프트웨어', 'sw', 's/w', '라이선스', '라이센스', '구독']
+    fixture_kws = [
+        '책상', '의자', '파티션', '캐비닛', '수납장', '테이블', '책장', '칠판', '소파', '침대', 
+        '블라인드', '집기', '서랍장', '옷장', '진열대', '선반', '선반대', '탁자', '데스크',
+        '실험대', '시약대', '시약장', '작업대', '싱크대', '씽크대', '세척대'
+    ]
+    machine_kws = [
+        '서버', 'pc', '데스크탑', '노트북', '모니터', '분석기', '현미경', '측정기', '펌프', '레이저', 
+        '냉장고', '카메라', '프린터', '라우터', '스위치', '오실로스코프', '센서', 'sensor', 
+        '장비', '기기', '기구', '시스템', 'system', 'tv', '텔레비전', '스탠드', 
+        '소프트웨어', 'sw', 's/w', '라이선스', '라이센스', '구독',
+        '후드', '퓸후드', '흄후드', '클린벤치', '인큐베이터', '챔버'
+    ]
     
     is_fixture = any(kw in clean_name or kw in clean_erp for kw in fixture_kws)
     is_machine = any(kw in clean_name or kw in clean_erp for kw in machine_kws)
@@ -947,7 +962,7 @@ def check_bipum_qualify(name, unit_price, erp_cat=""):
     if is_machine and unit_price >= 300000:
         return True
     # 3. 소모품 명시 키워드가 아니면서 단가 30만원 이상인 경우 -> 비품 자격
-    if unit_price >= 300000 and not any(kw in clean_name for kw in consumable_kws):
+    if unit_price >= 300000 and not any(kw in name_for_consumable for kw in consumable_kws):
         return True
     return False
 
