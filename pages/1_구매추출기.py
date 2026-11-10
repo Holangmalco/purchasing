@@ -2681,6 +2681,47 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                                 "수량 검증": qty_status, "최종 판정": name_status
                             })
                         st.dataframe(pd.DataFrame(match_results), width="stretch", hide_index=True)
+
+                        # 💡 부대비용(운송비/배송비/설치비 등) 녹임 여부 및 견적서 내 단가×수량 단순 확인 안내 (반려 사유 아님)
+                        soft_check_notes = []
+                        extra_fee_kws = ['운송', '배송', '택배', '설치', '운반', '출장', '부대비용', '할인', '절사', '네고', '단수']
+                        detected_fee_items = []
+                        arith_notes = []
+
+                        for idx_q, q_itm in enumerate(ai_items, 1):
+                            q_nm = str(q_itm.get('품명', '')).strip()
+                            q_qty = safe_int(q_itm.get('수량', 0))
+                            q_up = safe_int(q_itm.get('단가', 0))
+                            q_amt = safe_int(q_itm.get('금액', 0))
+
+                            if any(kw in q_nm for kw in extra_fee_kws):
+                                fee_amt_val = q_amt if q_amt != 0 else (q_up * (q_qty or 1))
+                                detected_fee_items.append(f"{q_nm}({fee_amt_val:,}원)")
+
+                            if q_qty > 0 and q_up > 0 and q_amt > 0:
+                                expected_supply = q_up * q_qty
+                                expected_vat_inc = round(expected_supply * 1.1)
+                                if abs(expected_supply - q_amt) > 10 and abs(expected_vat_inc - q_amt) > 10:
+                                    arith_notes.append(
+                                        f"견적 품목 {idx_q}번 `{q_nm}`: 단가({q_up:,}) × 수량({q_qty}) = {expected_supply:,}원 ↔ 표기 금액({q_amt:,}원)"
+                                    )
+
+                        if detected_fee_items:
+                            soft_check_notes.append(
+                                f"📦 **부대비용/조정 항목 감지**: 견적서에 **{', '.join(detected_fee_items)}** 항목이 포함되어 있습니다. ERP 물품내역 단가/금액에 적절히 녹여서 반영되었는지 확인해 주세요."
+                            )
+                        elif len(ai_items) != len(item_list):
+                            soft_check_notes.append(
+                                f"📋 **품목 건수 차이 참고**: ERP 품목({len(item_list)}건)과 견적서 품목({len(ai_items)}건)의 행 개수가 다릅니다. (운송비·설치비 합산 반영 또는 세트 품목 여부 확인)"
+                            )
+
+                        if arith_notes:
+                            soft_check_notes.append(
+                                "🧮 **견적서 내 단가×수량 참고 확인** (부대비용 합산·단수절사·AI 오독 여부 눈으로만 확인):\n  - " + "\n  - ".join(arith_notes)
+                            )
+
+                        if soft_check_notes:
+                            st.info("💡 **[참고 / 육안 확인 사항 (반려 대상 아님)]**\n\n" + "\n\n".join(soft_check_notes))
         else:
             st.info("📄 첨부된 서류가 없어 AI 교차 검증(금액/품목 대조)은 생략하고 ERP 텍스트 분석 결과만 출력합니다.")
 
