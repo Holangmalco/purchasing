@@ -755,15 +755,17 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
     if not matching_records:
         return [], 0, []
         
+    # 날짜순 정렬
+    matching_records.sort(key=lambda x: x.get('date', ''))
     past_sum = sum(m["amt"] for m in matching_records)
     combined_total = past_sum + int(current_amt or 0)
     
     # 사용자 지정 포맷: 구매요구번호 XXXX건 동일과제, 동일업체 / 총 구매요청액 XXXX원
-    warn_msgs = [
-        f"구매요구번호 {m['req_no']}건 동일과제, 동일업체 / 총 구매요청액 {m['amt']:,}원"
-        for m in matching_records
-    ]
-    return warn_msgs, combined_total, matching_records
+    # 과거건이 여러 개일 경우 각 건의 금액을 전부 합산하여 단일 총합계 문구로 생성
+    req_nos_str = ", ".join([str(m["req_no"]) for m in matching_records])
+    warn_msg = f"구매요구번호 {req_nos_str}건 동일과제, 동일업체 / 총 구매요청액 {past_sum:,}원"
+    
+    return [warn_msg], combined_total, matching_records
 
 # ==========================================
 # 3. 데이터 파싱 엔진
@@ -2710,7 +2712,8 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                     st.warning(
                         f"💡 **[안내] 동일과제·동일업체 1개월 내 구매요청 이력 감지**\n\n"
                         f"- **과제번호**: `{curr_p_no}` / **업체명**: `{curr_ven}`\n"
-                        f"- **현재 요청액**: `{total_amt:,}원` / **과거 1개월 내 등록건**: " + ", ".join([f"`{m['req_no']}` ({m['date']}, {m['amt']:,}원)" for m in dup_matches]) + f" (합산 `{dup_total:,}원`)\n\n"
+                        f"- **현재 요청액**: `{total_amt:,}원` + **과거 1개월 내 등록액**: `{sum(m['amt'] for m in dup_matches):,}원` = **총 `{dup_total:,}원`**\n"
+                        f"- **관련 과거 요구건**: " + ", ".join([f"`{m['req_no']}` ({m['date']}, {m['amt']:,}원)" for m in dup_matches]) + "\n\n"
                         f"📌 결재의견 '2. 확인사항'에 사전 확인 문구가 자동으로 반영되었습니다."
                     )
 
