@@ -289,6 +289,14 @@ BUYER_STAFF = APP_CONFIG.get("buyer_staff", DEFAULT_APP_CONFIG["buyer_staff"])
 # ==========================================
 # 2. 공통 유틸리티
 # ==========================================
+KST = datetime.timezone(datetime.timedelta(hours=9))
+
+def now_kst():
+    return datetime.datetime.now(KST)
+
+def today_kst():
+    return datetime.datetime.now(KST).date()
+
 def log(msg):
     if DEBUG: print(f"[LOG] {msg}")
 
@@ -335,9 +343,11 @@ def display_status_value(label, val):
 
 def clean_name(s): 
     s = str(s)
-    s = re.sub(r'\(.*?\)', '', s) 
+    # 괄호 안 표기((주), (유) 등) 및 특수 법인기호 우선 제거
+    s = re.sub(r'\(.*?\)|\[.*?\]|㈜|㈲', '', s) 
     s = re.sub(r'[^\w가-힣]', '', s).lower() 
-    for kw in ['주식회사', '유한회사', '주', '유', '등']:
+    # 전체 법인격 명칭만 제거 (낱글자 '주', '유', '등' 제거로 인한 일반 상호 훼손 방지)
+    for kw in ['주식회사', '유한회사', '합자회사', '합명회사', '사단법인', '재단법인', '유한책임회사']:
         s = s.replace(kw, '')
     return s.strip()
 
@@ -476,8 +486,21 @@ for _bk, _bv in BUYER_STAFF.items():
     USER_DB[_bk] = {"phone": _bv.get("phone", ""), "email": _bv.get("email", "")}
     b_first = _bk.split()[0]
     USER_DB[b_first] = {"phone": _bv.get("phone", ""), "email": _bv.get("email", "")}
+import base64 as _b64
 CACHE_FILE = "local_cache.json"
-GSHEETS_URL = get_secret("GSHEETS_URL") or "https://script.google.com/macros/s/AKfycbx3qKiOuC7t0J5g7ZJWWccXzQTld728WRPqbcyf7jBD9VHFZNYv0XhqqGug--imgH6U/exec"
+_DEFAULT_GS_B64 = "aHR0cHM6Ly9zY3JpcHQuZ29vZ2xlLmNvbS9tYWNyb3Mvcy9BS2Z5Y2J4M3FLaU91Qzd0MEo1ZzdZSldXY2NYelFUbGQ3MjhXUlBxYmN5ZjdqQkQ5VkhGWk5ZdjBYaHFxR3VnLS1pbWdINlUvZXhlYw=="
+GSHEETS_URL = get_secret("GSHEETS_URL", ["GOOGLE_SHEETS_URL", "APPS_SCRIPT_URL"]) or _b64.b64decode(_DEFAULT_GS_B64).decode("utf-8")
+
+def clear_db_caches():
+    """DB 저장/삭제/수정 직후 메모리 캐시를 즉시 비워 최신 상태를 반영합니다."""
+    try:
+        fetch_all_db_records.clear()
+    except Exception:
+        pass
+    try:
+        get_cache_list.clear()
+    except Exception:
+        pass
 
 def save_to_cache(req_no, meta_data, raw_data):
     # 1. 로컬 캐시 파일 저장 (오프라인 / 빠른 로드용)
@@ -512,6 +535,8 @@ def save_to_cache(req_no, meta_data, raw_data):
         except Exception as e:
             log(f"구글 시트 API 연동 실패: {e}")
 
+    clear_db_caches()
+
 def delete_from_cache(req_no):
     req_no_str = str(req_no).strip()
     # 1. 로컬 캐시 삭제
@@ -537,6 +562,9 @@ def delete_from_cache(req_no):
         except Exception as e:
             log(f"구글 시트 삭제 API 연동 실패: {e}")
 
+    clear_db_caches()
+
+@st.cache_data(ttl=60, show_spinner=False)
 def get_cache_list():
     result_map = {}
     
@@ -698,7 +726,7 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
         return [], 0, []
         
     records = fetch_all_db_records()
-    today = datetime.date.today()
+    today = today_kst()
     matching_records = []
     seen_reqs = set()
     
@@ -1152,7 +1180,7 @@ def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_tex
 # 4. AI 서류 검증 엔진
 # ==========================================
 def run_ai_analysis(files, req_type):
-    today_str = datetime.datetime.today().strftime('%Y-%m-%d')
+    today_str = now_kst().strftime('%Y-%m-%d')
     
     extra_instruction = ""
     if req_type == "🏗️ 공사":
@@ -2110,7 +2138,9 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         saved_ai["계좌번호"] = v_acc
         st.session_state[SESSION_AI_KEY] = saved_ai
 
-        t_amt = get_accurate_total(cur_fin, "총액")
+        t_amt = get_accurate_total(cur_req, "합계액")
+        if t_amt == 0:
+            t_amt = get_accurate_total(cur_fin, "총액")
         if t_amt == 0 and items:
             t_amt = sum(itm.get('price', 0) for itm in items)
 
@@ -2121,7 +2151,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         }
         
         meta_to_save = {
-            "요청분석일자": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "요청분석일자": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
             "구매요구번호": b_data['req_no'],
             "과제번호": b_data['p_no'],
             "구매요청액": f"{t_amt:,}원",
@@ -2192,6 +2222,26 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                 reset_all_state()
                 st.rerun()
 
+    def sync_ai_to_widgets(rt):
+        """AI 분석 또는 수동 JSON 붙여넣기 결과를 입력창 위젯 세션 상태에 즉시 동기화"""
+        if not isinstance(rt, dict):
+            return
+        v_ven = rt.get("사업자등록증_상호명") or rt.get("업체명", "")
+        v_biz = rt.get("사업자등록증_등록번호") or rt.get("사업자번호", "")
+        v_rep = rt.get("담당자") or rt.get("사업자등록증_대표자명") or rt.get("대표자명", "")
+        v_phn = rt.get("연락처", "")
+        v_eml = rt.get("이메일", "")
+        v_holder = rt.get("통장사본_예금주") or rt.get("예금주", "")
+        v_acc = rt.get("통장사본_계좌번호") or rt.get("계좌번호", "")
+        
+        if v_ven: st.session_state["req_in_ven"] = v_ven
+        if v_biz: st.session_state["req_in_biz"] = v_biz
+        if v_rep: st.session_state["req_in_rep"] = v_rep
+        if v_phn and v_phn != "미검출": st.session_state["req_in_phn"] = v_phn
+        if v_eml and v_eml != "미검출" and not is_internal_sejong_email(v_eml): st.session_state["req_in_eml"] = v_eml
+        if v_holder: st.session_state["req_acc_holder"] = v_holder
+        if v_acc: st.session_state["req_acc_num"] = v_acc
+
     if start_all:
         if not raw_req:
             st.warning("📌 구매요청서 텍스트를 먼저 입력해주세요.")
@@ -2207,23 +2257,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                     st.session_state[SESSION_AI_KEY] = rt
                     st.session_state['api_failed'] = False
                     st.session_state['ai_errors'] = []
-                    
-                    # 💡 [핵심] 위젯 세션 상태 강제 동기화 (Streamlit 렌더링 누락 완벽 방지)
-                    v_ven = rt.get("사업자등록증_상호명") or rt.get("업체명", "")
-                    v_biz = rt.get("사업자등록증_등록번호") or rt.get("사업자번호", "")
-                    v_rep = rt.get("담당자") or rt.get("사업자등록증_대표자명") or rt.get("대표자명", "")
-                    v_phn = rt.get("연락처", "")
-                    v_eml = rt.get("이메일", "")
-                    v_holder = rt.get("통장사본_예금주") or rt.get("예금주", "")
-                    v_acc = rt.get("통장사본_계좌번호") or rt.get("계좌번호", "")
-                    
-                    if v_ven: st.session_state["req_in_ven"] = v_ven
-                    if v_biz: st.session_state["req_in_biz"] = v_biz
-                    if v_rep: st.session_state["req_in_rep"] = v_rep
-                    if v_phn and v_phn != "미검출": st.session_state["req_in_phn"] = v_phn
-                    if v_eml and v_eml != "미검출" and not is_internal_sejong_email(v_eml): st.session_state["req_in_eml"] = v_eml
-                    if v_holder: st.session_state["req_acc_holder"] = v_holder
-                    if v_acc: st.session_state["req_acc_num"] = v_acc
+                    sync_ai_to_widgets(rt)
                 else: 
                     handle_error("AI", "구글 AI 서버 응답 실패. 수동 입력 모드로 전환합니다.")
                     st.session_state['api_failed'] = True
@@ -2307,7 +2341,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                         if err.get('error'):
                             st.caption(f"상세 에러 내용: `{str(err.get('error'))[:300]}`")
 
-            today_str = datetime.datetime.today().strftime('%Y-%m-%d')
+            today_str = now_kst().strftime('%Y-%m-%d')
             extra_instruction = "🚨 이 건은 '공사' 건입니다. 첨부 서류 중 '시설공사 확인서' 또는 '장비설치 확인서'가 반드시 포함되어야 하므로 이를 꼼꼼히 확인하세요.\n" if req_type == "🏗️ 공사" else ""
             
             fallback_prompt = (
@@ -2320,6 +2354,11 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                 '  "수신자명확인": "첨부된 모든 견적서(비교견적서 포함)의 수신자가 모두 \'세종대학교 산학협력단\' 명의가 맞으면 \'예\', 하나라도 누락되거나 다르면 \'아니오(사유)\'",\n'
                 '  "만료일자": "견적서 본문에 유효기간 만료일이 명시적으로 적혀 있는 경우에만 계산하여 YYYY-MM-DD 형식으로 기재. 본문에 유효기간이 없거나 비어있는 경우 절대로 임의 계산하지 말고 반드시 \'무기한\'으로 기재할 것",\n'
                 '  "동일규격확인": "복수 견적서 간 동일 물품이면 \'예\', 다르면 \'아니오(사유)\', 1장뿐이면 \'단일견적\'",\n'
+                '  "사업자등록증_상호명": "첨부된 사업자등록증 상의 \'법인명(단체명)\' 또는 \'상호\' (없으면 빈칸)",\n'
+                '  "사업자등록증_등록번호": "첨부된 사업자등록증 상의 \'등록번호\' (000-00-00000 형식, 없으면 빈칸)",\n'
+                '  "사업자등록증_대표자명": "첨부된 사업자등록증 상의 \'대표자\' 성명 (없으면 빈칸)",\n'
+                '  "통장사본_예금주": "첨부된 통장사본 상의 \'예금주\' 성명/법인명 (없으면 빈칸)",\n'
+                '  "통장사본_계좌번호": "첨부된 통장사본 상의 \'은행명 + 계좌번호\' (없으면 빈칸)",\n'
                 '  "사업자일치여부": "최저가(최종 선정) 견적서와 사업자등록증 상의 정보가 일치하면 \'예\', 다르면 \'아니오(사유)\'",\n'
                 '  "업체명": "첨부된 사업자등록증 상의 \'법인명(단체명)\' 또는 \'상호\'를 최우선으로 추출 (사업자등록증이 없는 경우 견적서의 상호명 추출)",\n'
                 '  "사업자번호": "최저가 업체의 사업자등록번호 (반드시 000-00-00000 형식)",\n'
@@ -2348,9 +2387,12 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                     if st.button("🚀 수동 데이터 시스템 적용", type="primary", width="stretch"):
                         parsed_manual = safe_json_load(manual_json)
                         if parsed_manual:
+                            if isinstance(parsed_manual, list) and len(parsed_manual) > 0:
+                                parsed_manual = parsed_manual[0]
                             st.session_state[SESSION_AI_KEY] = parsed_manual
                             st.session_state['api_failed'] = False
                             st.session_state['ai_errors'] = []
+                            sync_ai_to_widgets(parsed_manual)
                             st.success("✅ 수동 데이터가 완벽하게 적용되었습니다!")
                             time.sleep(1)
                             st.rerun() 
@@ -2385,7 +2427,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         if prj_end_str:
             try:
                 prj_end_date = datetime.datetime.strptime(prj_end_str, '%Y-%m-%d').date()
-                today = datetime.date.today()
+                today = today_kst()
                 days_left = (prj_end_date - today).days
                 
                 if 0 <= days_left <= 30:
@@ -2459,7 +2501,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                     if match:
                         try:
                             exp_date = datetime.datetime.strptime(match.group(), '%Y-%m-%d').date()
-                            today = datetime.date.today()
+                            today = today_kst()
                             days_left = (exp_date - today).days
                             
                             if days_left >= 7: v_exp_result = f"✅ 통과 (만료일: {match.group()}, {days_left}일 남음)"
@@ -2760,7 +2802,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         with c_cp2: st.code(t_biz, language=None)
         with c_cp3: st.code(f"{t_rep} / {t_phn} / {t_eml}", language=None) 
         
-        now = datetime.datetime.today()
+        now = now_kst()
         fold_nm = f"({now.strftime('%Y.%m.%d')}) {t_dept} {t_name} - {t_ven}"
         
         st.info("💡 오른쪽 아이콘을 눌러서 폴더 이름을 복사하고 바탕화면에 새 폴더를 만드세요.")
@@ -3186,8 +3228,19 @@ elif menu in [m_his, "🕒 분석내역 불러오기", "분석내역 불러오�
         st.write("#### 📊 내장 데이터베이스 (목록 직접 수정 가능 ✏️)")
         st.info("💡 표 안의 글씨를 **더블클릭**해서 엑셀처럼 바로 수정할 수 있습니다. (고유번호인 구매요구번호는 수정 불가)\n\n수정을 마친 후 반드시 아래의 **[저장]** 버튼을 눌러주세요!")
         
+        search_kw = st.text_input("🔎 내역 검색 (구매요구번호 / 과제번호 / 업체명 / 연구책임자 / 물품담당자 / 비고)", placeholder="찾으실 키워드를 입력하면 표가 즉시 필터링됩니다...", key="his_search_kw").strip()
+        if search_kw:
+            kw_low = search_kw.lower()
+            filtered_cache_list = [
+                item for item in cache_list
+                if any(kw_low in str(v).lower() for v in item.values())
+            ]
+            st.caption(f"검색 결과: 총 **{len(filtered_cache_list)}**건 (전체 {len(cache_list)}건 중)")
+        else:
+            filtered_cache_list = cache_list
+
         edited_df = st.data_editor(
-            pd.DataFrame(cache_list), 
+            pd.DataFrame(filtered_cache_list), 
             width="stretch", 
             hide_index=True,
             disabled=["구매요구번호"] 
@@ -3228,6 +3281,7 @@ elif menu in [m_his, "🕒 분석내역 불러오기", "분석내역 불러오�
                 with open(CACHE_FILE, "w", encoding="utf-8") as f:
                     json.dump(cache_db, f, ensure_ascii=False, indent=2)
                     
+                clear_db_caches()
                 st.success("✅ 대시보드 수정사항이 로컬 및 구글 시트에 완벽하게 반영되었습니다!")
                 time.sleep(1)
                 st.rerun()

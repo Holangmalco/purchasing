@@ -3,6 +3,10 @@ __pycache__/
 *.pyo
 *.pyd
 .env
+local_cache.json
+.admin_pin.key
+.streamlit/secrets.toml
+output/
 build/
 dist/
 *.spec
