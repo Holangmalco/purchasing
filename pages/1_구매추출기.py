@@ -684,10 +684,10 @@ def fetch_all_db_records():
 
 def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_req_no, current_amt):
     """
-    동일 과제번호 기준 1개월(30일) 이내 동일 업체와의 누적 계약/요청 금액이 2,200만 원 초과 시 경고 반환
+    동일 과제번호 기준 1개월(31일) 이내 동일 업체와의 기존 구매요청 건이 있을 경우 사전 확인 문구 반환
     """
     if not project_no or not str(project_no).strip() or "확인" in str(project_no):
-        return None, 0, []
+        return [], 0, []
         
     clean_curr_pno = re.sub(r'[\s\-_]', '', str(project_no)).upper()
     clean_curr_biz = re.sub(r'[^\d]', '', str(vendor_biz or ''))
@@ -695,15 +695,20 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
     curr_req_str = str(current_req_no or '').strip()
     
     if not clean_curr_biz and not clean_curr_ven:
-        return None, 0, []
+        return [], 0, []
         
     records = fetch_all_db_records()
     today = datetime.date.today()
     matching_records = []
+    seen_reqs = set()
     
     for r in records:
         r_req = str(r.get("구매요구번호", "")).strip()
+        if not r_req or r_req.startswith("TEST"):
+            continue
         if curr_req_str and r_req == curr_req_str:
+            continue
+        if r_req in seen_reqs:
             continue
             
         r_pno = str(r.get("과제번호", "")).strip()
@@ -716,45 +721,49 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
         
         is_same_vendor = False
         if clean_curr_biz and len(clean_curr_biz) >= 10 and r_biz and len(r_biz) >= 10:
-            is_same_vendor = (clean_curr_biz == r_biz)
-        elif clean_curr_ven and r_ven:
-            is_same_vendor = (clean_curr_ven == r_ven or clean_curr_ven in r_ven or r_ven in clean_curr_ven)
+            if clean_curr_biz == r_biz:
+                is_same_vendor = True
+        if not is_same_vendor and clean_curr_ven and r_ven and len(clean_curr_ven) >= 2 and len(r_ven) >= 2:
+            if clean_curr_ven == r_ven or clean_curr_ven in r_ven or r_ven in clean_curr_ven:
+                is_same_vendor = True
             
         if not is_same_vendor:
             continue
             
-        # DB 등록일 기준 1개월(30일) 이내 여부 체크
+        # DB 등록일 기준 1개월(31일) 이내 여부 체크
         d_str = str(r.get("요청분석일자", ""))
-        m_date = re.search(r'\d{4}-\d{2}-\d{2}', d_str)
+        m_date = re.search(r'(\d{4})[-./](\d{2})[-./](\d{2})', d_str)
         if not m_date:
             continue
         try:
-            r_date = datetime.datetime.strptime(m_date.group(), '%Y-%m-%d').date()
+            r_date = datetime.date(int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3)))
         except:
             continue
             
         diff_days = (today - r_date).days
-        if -2 <= diff_days <= 30:
+        if -2 <= diff_days <= 31:
             raw_nums = re.sub(r'[^\d]', '', str(r.get("구매요청액", "")))
             amt_num = int(raw_nums) if raw_nums else 0
             matching_records.append({
                 "req_no": r_req,
-                "date": m_date.group(),
+                "date": f"{m_date.group(1)}-{m_date.group(2)}-{m_date.group(3)}",
                 "amt": amt_num,
                 "ven": r.get("업체명", "")
             })
+            seen_reqs.add(r_req)
             
     if not matching_records:
-        return None, 0, []
+        return [], 0, []
         
     past_sum = sum(m["amt"] for m in matching_records)
-    combined_total = past_sum + current_amt
+    combined_total = past_sum + int(current_amt or 0)
     
-    if combined_total > 22000000:
-        warning_msg = f"동일과제·동일업체 1개월 내 2,200만원 초과 확인필요 (DB등록일 기준 {len(matching_records)}건 합산 {combined_total:,}원 / 구매계약일 확인 요망)"
-        return warning_msg, combined_total, matching_records
-        
-    return None, combined_total, matching_records
+    # 사용자 지정 포맷: 구매요구번호 XXXX건 동일과제, 동일업체 / 총 구매요청액 XXXX원
+    warn_msgs = [
+        f"구매요구번호 {m['req_no']}건 동일과제, 동일업체 / 총 구매요청액 {m['amt']:,}원"
+        for m in matching_records
+    ]
+    return warn_msgs, combined_total, matching_records
 
 # ==========================================
 # 3. 데이터 파싱 엔진
@@ -1109,18 +1118,28 @@ def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_tex
         if is_bad_eml or is_bad_phn:
             rules_triggered.append("업체담당자 정보 확인필요")
 
-    # 5. 동일과제/동일업체 1개월 내 2,200만원 초과 확인 (수의계약 분할 방지)
+    # 5. 동일과제/동일업체 1개월 내 구매요청 이력 확인
     p_no_to_check = project_no
-    if (not p_no_to_check or "확인" in str(p_no_to_check)) and raw_req_text:
+    curr_req_to_check = current_req_no
+    if (not p_no_to_check or "확인" in str(p_no_to_check) or not curr_req_to_check) and raw_req_text:
         b_info = extract_base_info(raw_req_text)
-        if b_info: p_no_to_check = b_info.get('p_no', '')
+        if b_info:
+            if not p_no_to_check or "확인" in str(p_no_to_check):
+                p_no_to_check = b_info.get('p_no', '')
+            if not curr_req_to_check:
+                c_req = b_info.get('req_no', '')
+                if c_req and "확인" not in c_req:
+                    curr_req_to_check = c_req
         
     v_name_to_check = vendor_name or (ai_res.get('사업자등록증_상호명') or ai_res.get('업체명', '') if ai_res else '')
     v_biz_to_check = vendor_bizno or (ai_res.get('사업자등록증_등록번호') or ai_res.get('사업자번호', '') if ai_res else '')
     
-    dup_warn, _, _ = check_split_procurement_risk(p_no_to_check, v_name_to_check, v_biz_to_check, current_req_no, amount)
-    if dup_warn:
-        rules_triggered.append(dup_warn)
+    dup_warns, _, _ = check_split_procurement_risk(p_no_to_check, v_name_to_check, v_biz_to_check, curr_req_to_check, amount)
+    if dup_warns:
+        if isinstance(dup_warns, list):
+            rules_triggered.extend(dup_warns)
+        else:
+            rules_triggered.append(dup_warns)
 
     unique_rules = list(dict.fromkeys(rules_triggered))
     issues_text = " - 특이사항 없음" if not unique_rules else "\n".join([f" - {r}" for r in unique_rules])
@@ -2675,17 +2694,25 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         curr_p_no = base_data.get('p_no', '')
         curr_req_no = base_data.get('req_no', '')
 
-        # 동일과제/동일업체 1개월 내 2,200만원 초과 검사 및 UI 배너 렌더링
-        dup_warn, dup_total, dup_matches = check_split_procurement_risk(curr_p_no, curr_ven, curr_biz, curr_req_no, total_amt)
-        if dup_warn:
+        # 동일과제/동일업체 1개월 내 구매요청 이력 검사 및 UI 배너 렌더링
+        dup_warns, dup_total, dup_matches = check_split_procurement_risk(curr_p_no, curr_ven, curr_biz, curr_req_no, total_amt)
+        if dup_matches:
             with st.container(border=True):
-                st.warning(
-                    f"🚨 **[주의] 동일과제·동일업체 1개월 내 누적 2,200만 원 초과 의심 건**\n\n"
-                    f"- **과제번호**: `{curr_p_no}` / **업체명**: `{curr_ven}`\n"
-                    f"- **현재 요청액**: `{total_amt:,}원` + **과거 1개월 내 등록액**: `{sum(m['amt'] for m in dup_matches):,}원` = **총 `{dup_total:,}원`**\n"
-                    f"- **관련 과거 요구건**: " + ", ".join([f"`{m['req_no']}` ({m['date']}, {m['amt']:,}원)" for m in dup_matches]) + "\n\n"
-                    f"💡 DB 등록일 기준 1개월 이내 건이므로, **실제 구매계약일 기준으로 1개월 이내 2,200만 원 초과(입찰 대상) 여부**를 반드시 확인하세요."
-                )
+                if dup_total > 22000000:
+                    st.error(
+                        f"🚨 **[주의] 동일과제·동일업체 1개월 내 누적 2,200만 원 초과 의심 건**\n\n"
+                        f"- **과제번호**: `{curr_p_no}` / **업체명**: `{curr_ven}`\n"
+                        f"- **현재 요청액**: `{total_amt:,}원` + **과거 1개월 내 등록액**: `{sum(m['amt'] for m in dup_matches):,}원` = **총 `{dup_total:,}원`**\n"
+                        f"- **관련 과거 요구건**: " + ", ".join([f"`{m['req_no']}` ({m['date']}, {m['amt']:,}원)" for m in dup_matches]) + "\n\n"
+                        f"💡 DB 등록일 기준 1개월 이내 건이므로, **실제 구매계약일 기준으로 1개월 이내 2,200만 원 초과(입찰 대상) 여부**를 반드시 확인하세요."
+                    )
+                else:
+                    st.warning(
+                        f"💡 **[안내] 동일과제·동일업체 1개월 내 구매요청 이력 감지**\n\n"
+                        f"- **과제번호**: `{curr_p_no}` / **업체명**: `{curr_ven}`\n"
+                        f"- **현재 요청액**: `{total_amt:,}원` / **과거 1개월 내 등록건**: " + ", ".join([f"`{m['req_no']}` ({m['date']}, {m['amt']:,}원)" for m in dup_matches]) + f" (합산 `{dup_total:,}원`)\n\n"
+                        f"📌 결재의견 '2. 확인사항'에 사전 확인 문구가 자동으로 반영되었습니다."
+                    )
 
         st.divider()
         st.write("#### ✍️ 결재 의견 (자동 생성)")
