@@ -145,6 +145,7 @@ DEFAULT_APP_CONFIG = {
     "btn_load_contract": "계약 데이터 불러오기",
     "con_btn_gen": "📄 [{no}번] 워드파일 생성 준비",
     "con_btn_dl": "📥 [{no}번] 완성된 발주요청서 다운로드 (.docx)",
+    "work_base_dir": os.path.join(os.path.expanduser("~"), "Desktop", "구매업무"),
     # 4. 담당자 정보
     "buyer_staff": {
         "권순철 사원": {"name": "권순철", "phone": "02-6935-2624", "email": "hagrid0924@sejong.ac.kr"},
@@ -296,6 +297,83 @@ def now_kst():
 
 def today_kst():
     return datetime.datetime.now(KST).date()
+
+def sanitize_win_name(name_str):
+    """윈도우 폴더/파일명 금지 문자 제거 및 공백 정돈"""
+    cleaned = re.sub(r'[\\/*?:"<>|\r\n\t]', ' ', str(name_str or '')).strip()
+    return re.sub(r'\s+', ' ', cleaned)
+
+def build_recommended_folder_name(dept, pi_name, vendor_name, req_no="", date_obj=None):
+    """추천 폴더명 생성: (YYYY.MM.DD) 학과 성명 - 업체명 (구매요구번호)"""
+    dt = date_obj or now_kst()
+    d_str = dt.strftime('%Y.%m.%d')
+    c_dept = sanitize_win_name(dept)
+    c_pi = sanitize_win_name(pi_name)
+    c_ven = sanitize_win_name(vendor_name) or "업체미상"
+    c_req = sanitize_win_name(req_no)
+    if c_req in ["확인요망", "미검출", "없음"]:
+        c_req = ""
+
+    left_part = f"{c_dept} {c_pi}".strip()
+    if left_part:
+        base_folder = f"({d_str}) {left_part} - {c_ven}"
+    else:
+        base_folder = f"({d_str}) {c_ven}"
+
+    if c_req:
+        return f"{base_folder} ({c_req})"
+    return base_folder
+
+def resolve_or_create_req_folder(base_dir, req_no="", dept="", pi_name="", vendor_name="", fallback_title=""):
+    """
+    지정된 상위 폴더(base_dir)에서 구매요구번호(req_no)가 포함된 기존 폴더를 우선 탐색하고,
+    없으면 추천 폴더명 규칙으로 새 폴더를 자동 생성한 뒤 (폴더절대경로, 신규생성여부)를 반환합니다.
+    """
+    target_base = str(base_dir or "").strip() or os.path.join(os.path.expanduser("~"), "Desktop", "구매업무")
+    os.makedirs(target_base, exist_ok=True)
+
+    c_req = sanitize_win_name(req_no)
+    if c_req in ["확인요망", "미검출", "없음"]:
+        c_req = ""
+
+    # 1. 구매요구번호가 있으면 상위 폴더(및 1단계 하위 폴더)에서 해당 번호가 포함된 폴더 탐색
+    if c_req and len(c_req) >= 6:
+        try:
+            entries = sorted(os.listdir(target_base), reverse=True)
+            for entry in entries:
+                full_p = os.path.join(target_base, entry)
+                if os.path.isdir(full_p) and c_req in entry:
+                    return full_p, False
+            # 1단계 하위 폴더(월별 분류 폴더 등) 내부도 탐색
+            for entry in entries:
+                sub_p = os.path.join(target_base, entry)
+                if os.path.isdir(sub_p):
+                    try:
+                        for sub_entry in sorted(os.listdir(sub_p), reverse=True):
+                            sub_full = os.path.join(sub_p, sub_entry)
+                            if os.path.isdir(sub_full) and c_req in sub_entry:
+                                return sub_full, False
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # 2. 기존 폴더가 없으면 추천 폴더명 규칙으로 신규 생성
+    eff_dept = dept if (dept or pi_name) else fallback_title
+    folder_nm = build_recommended_folder_name(eff_dept, pi_name, vendor_name, c_req)
+    new_folder_path = os.path.join(target_base, folder_nm)
+    os.makedirs(new_folder_path, exist_ok=True)
+    return new_folder_path, True
+
+def open_local_folder(folder_path):
+    """윈도우 탐색기에서 해당 폴더를 즉시 엽니다."""
+    if os.path.exists(folder_path):
+        try:
+            os.startfile(os.path.abspath(folder_path))
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+    return False, "폴더가 존재하지 않습니다."
 
 def log(msg):
     if DEBUG: print(f"[LOG] {msg}")
@@ -2843,11 +2921,47 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         with c_cp2: st.code(t_biz, language=None)
         with c_cp3: st.code(f"{t_rep} / {t_phn} / {t_eml}", language=None) 
         
-        now = now_kst()
-        fold_nm = f"({now.strftime('%Y.%m.%d')}) {t_dept} {t_name} - {t_ven}"
+        fold_nm = build_recommended_folder_name(t_dept, t_name, t_ven, base_data.get('req_no', ''))
         
-        st.info("💡 오른쪽 아이콘을 눌러서 폴더 이름을 복사하고 바탕화면에 새 폴더를 만드세요.")
+        st.info("💡 오른쪽 아이콘을 눌러 폴더 이름을 복사하거나, 아래 버튼으로 지정 상위 폴더 하위에 즉시 생성하세요.")
         st.code(fold_nm, language="text")
+
+        cur_base_dir = APP_CONFIG.get("work_base_dir") or os.path.join(os.path.expanduser("~"), "Desktop", "구매업무")
+        c_fd1, c_fd2, c_fd3 = st.columns([2.5, 1.3, 1.0])
+        with c_fd1:
+            in_base_dir = st.text_input("📂 고정 상위 폴더 경로", value=cur_base_dir, key="ext_work_base_dir", label_visibility="collapsed", placeholder="예: C:\\Users\\사용자\\Desktop\\구매업무")
+        with c_fd2:
+            if st.button("📁 상위 폴더에 새 폴더 즉시 생성", key="btn_mk_req_folder", width="stretch"):
+                try:
+                    if in_base_dir.strip() and in_base_dir.strip() != cur_base_dir:
+                        APP_CONFIG["work_base_dir"] = in_base_dir.strip()
+                        save_app_config(APP_CONFIG)
+                    target_f_dir = os.path.join(in_base_dir.strip() or cur_base_dir, fold_nm)
+                    os.makedirs(target_f_dir, exist_ok=True)
+                    saved_cnt = 0
+                    if up_files:
+                        for uf in up_files:
+                            uf_name = sanitize_win_name(uf.name)
+                            if uf_name:
+                                with open(os.path.join(target_f_dir, uf_name), "wb") as f_out:
+                                    f_out.write(uf.getvalue())
+                                saved_cnt += 1
+                    st.session_state["last_created_req_folder"] = target_f_dir
+                    msg_extra = f" (첨부파일 {saved_cnt}건 함께 저장됨)" if saved_cnt > 0 else ""
+                    st.toast(f"✅ 폴더 생성 완료!{msg_extra}")
+                except Exception as e_fd:
+                    st.error(f"🚨 폴더 생성 실패: {e_fd}")
+        with c_fd3:
+            if st.button("🗂️ 폴더 열기", key="btn_open_req_folder", width="stretch"):
+                target_open = st.session_state.get("last_created_req_folder") or os.path.join(in_base_dir.strip() or cur_base_dir, fold_nm)
+                if not os.path.exists(target_open):
+                    target_open = in_base_dir.strip() or cur_base_dir
+                    os.makedirs(target_open, exist_ok=True)
+                ok_op, err_op = open_local_folder(target_open)
+                if not ok_op:
+                    st.warning(f"폴더 열기 불가 (로컬 환경에서만 지원): {err_op}")
+        if st.session_state.get("last_created_req_folder"):
+            st.caption(f"📍 생성된 경로: `{st.session_state['last_created_req_folder']}`")
 
         st.divider()
         bank_t = get_ui_text("ext_bank_title", "🏦 통장사본 계좌정보")
@@ -3009,6 +3123,17 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                     if not cd.get('vendor_name') and cached_meta.get("업체명"):
                         cd['vendor_name'] = cached_meta.get("업체명")
 
+                    # 4) 연구책임자 학과/성명 연동 (발주서 자동 폴더 생성용)
+                    if not cd.get('pi_dept') and cached_meta.get("연구책임자_학과"):
+                        cd['pi_dept'] = cached_meta.get("연구책임자_학과")
+                    if not cd.get('pi_name') and cached_meta.get("연구책임자_성명"):
+                        cd['pi_name'] = cached_meta.get("연구책임자_성명")
+                    if (not cd.get('pi_dept') or not cd.get('pi_name')) and cached_meta.get("연구책임자정보"):
+                        pi_info_parts = str(cached_meta.get("연구책임자정보", "")).strip().split()
+                        if len(pi_info_parts) >= 2:
+                            if not cd.get('pi_dept'): cd['pi_dept'] = " ".join(pi_info_parts[:-1])
+                            if not cd.get('pi_name'): cd['pi_name'] = pi_info_parts[-1]
+
                 # 별도 메모창에 입력된 내용이 있으면 최우선 적용 (덮어쓰기)
                 if memo_txt.strip():
                     memo_info = parse_smart_contact_memo(memo_txt)
@@ -3044,6 +3169,23 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
     if 'multi_con_data' in st.session_state:
         st.divider()
         st.write(f"### 📝 2. 발주요청서 입력 폼 (총 {len(st.session_state['multi_con_data'])}건 추출됨)")
+        
+        cur_con_base_dir = APP_CONFIG.get("work_base_dir") or os.path.join(os.path.expanduser("~"), "Desktop", "구매업무")
+        with st.container(border=True):
+            c_cb1, c_cb2 = st.columns([3.5, 1.2])
+            with c_cb1:
+                con_base_dir_in = st.text_input(
+                    "📂 발주서 자동 분류/저장 상위 폴더 경로 (하위에 구매요구번호 폴더를 자동 탐색하거나 새로 생성하여 저장합니다)",
+                    value=cur_con_base_dir,
+                    key="con_work_base_dir"
+                )
+            with c_cb2:
+                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                if st.button("💾 기본 경로로 저장", key="btn_save_con_base_dir", width="stretch"):
+                    if con_base_dir_in.strip():
+                        APP_CONFIG["work_base_dir"] = con_base_dir_in.strip()
+                        save_app_config(APP_CONFIG)
+                        st.toast("✅ 기본 작업 상위 폴더 경로가 저장되었습니다!")
         
         for i, cd in enumerate(st.session_state['multi_con_data']):
             with st.expander(f"📌 [계약 {i+1}] {cd.get('con_name', '건명 미상')}", expanded=True):
@@ -3215,46 +3357,93 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                             if clean_req:
                                 target_fname = f"발주서 - {clean_req}.docx"
                             else:
-                                target_fname = f"발주서 - {e_name}.docx" if e_name else f"발주서_{e_ven}.docx"
+                                target_fname = f"발주서 - { sanitize_win_name(e_name) }.docx" if e_name else f"발주서_{ sanitize_win_name(e_ven) }.docx"
+
+                            docx_bytes = ts.getvalue()
+                            active_base_dir = st.session_state.get("con_work_base_dir", cur_con_base_dir).strip() or cur_con_base_dir
+                            if active_base_dir != APP_CONFIG.get("work_base_dir"):
+                                APP_CONFIG["work_base_dir"] = active_base_dir
+                                save_app_config(APP_CONFIG)
+
+                            saved_folder_path = ""
+                            saved_file_path = ""
+                            is_new_folder = False
+                            folder_err = ""
+                            try:
+                                saved_folder_path, is_new_folder = resolve_or_create_req_folder(
+                                    base_dir=active_base_dir,
+                                    req_no=clean_req,
+                                    dept=cd.get('pi_dept', ''),
+                                    pi_name=cd.get('pi_name', ''),
+                                    vendor_name=e_ven,
+                                    fallback_title=e_name
+                                )
+                                saved_file_path = os.path.join(saved_folder_path, target_fname)
+                                with open(saved_file_path, "wb") as f_target:
+                                    f_target.write(docx_bytes)
+                            except Exception as fe:
+                                folder_err = str(fe)
 
                             st.session_state[f"last_gen_docx_{i}"] = {
-                                "bytes": ts.getvalue(),
-                                "name": target_fname
+                                "bytes": docx_bytes,
+                                "name": target_fname,
+                                "folder_path": saved_folder_path,
+                                "file_path": saved_file_path,
+                                "is_new_folder": is_new_folder,
+                                "folder_err": folder_err
                             }
-                            st.success(f"✅ {i+1}번 발주서 생성 완료!")
+                            st.success(f"✅ {i+1}번 발주서 생성 및 폴더 자동 배치 완료! (`{target_fname}`)")
                         except Exception as e:
                             st.error(f"🚨 워드 파일 생성 중 오류 발생: {e}")
 
                 if f"last_gen_docx_{i}" in st.session_state:
                     saved_docx = st.session_state[f"last_gen_docx_{i}"]
-                    c_dl, c_ef = st.columns([1, 1])
+                    if saved_docx.get("file_path") and os.path.exists(saved_docx["file_path"]):
+                        folder_badge = "🆕 새 폴더 자동 생성됨" if saved_docx.get("is_new_folder") else "🔗 기존 구매요구번호 폴더 매칭됨"
+                        st.info(f"📂 **[{folder_badge}]** `{saved_docx['file_path']}`")
+                    elif saved_docx.get("folder_err"):
+                        st.warning(f"⚠️ 로컬 폴더 자동 저장 실패 (다운로드 버튼을 이용하세요): {saved_docx['folder_err']}")
+
+                    c_ef, c_op, c_dl = st.columns([1.2, 0.9, 1.2])
+                    with c_ef:
+                        if st.button(f"✍️ [{i+1}번] 이폼싸인(eformsign) 바로 실행", key=f"btn_eform_{i}", type="primary", width="stretch", help="폴더에 저장된 워드 문서를 열고 eformsign 모듈 버튼을 자동으로 실행합니다."):
+                            target_docx_path = saved_docx.get("file_path")
+                            if not target_docx_path or not os.path.exists(target_docx_path):
+                                out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "output")
+                                os.makedirs(out_dir, exist_ok=True)
+                                safe_name = re.sub(r'[\\/*?:"<>|]', '_', saved_docx["name"])
+                                target_docx_path = os.path.join(out_dir, safe_name)
+                                with open(target_docx_path, "wb") as f_out:
+                                    f_out.write(saved_docx["bytes"])
+                            
+                            with st.spinner("⏳ 워드를 실행하고 이폼싸인 모듈을 호출하는 중입니다..."):
+                                try:
+                                    from local_tools.eformsign_trigger import trigger_eformsign_in_word
+                                    ok = trigger_eformsign_in_word(target_docx_path, "실행")
+                                    if ok:
+                                        st.success("🎉 이폼싸인 모듈이 성공적으로 호출되었습니다! 워드 창에서 전자결재를 계속 진행해 주세요.")
+                                    else:
+                                        st.error("🚨 이폼싸인 모듈 호출 실패: 워드가 정상 실행되었는지, 상단에 eformsign 탭이 있는지 확인해주세요.")
+                                except Exception as err:
+                                    st.error(f"🚨 이폼싸인 실행 에러: {err}")
+                    with c_op:
+                        if st.button(f"📁 [{i+1}번] 저장 폴더 열기", key=f"btn_open_con_dir_{i}", width="stretch"):
+                            f_to_open = saved_docx.get("folder_path")
+                            if f_to_open and os.path.exists(f_to_open):
+                                ok_o, err_o = open_local_folder(f_to_open)
+                                if not ok_o:
+                                    st.error(f"폴더 열기 실패: {err_o}")
+                            else:
+                                st.warning("저장된 로컬 폴더를 찾을 수 없습니다.")
                     with c_dl:
                         st.download_button(
                             label=disp_dl_t,
                             data=saved_docx["bytes"],
                             file_name=saved_docx["name"],
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            key=f"btn_dl_{i}"
+                            key=f"btn_dl_{i}",
+                            width="stretch"
                         )
-                    with c_ef:
-                        if st.button(f"✍️ [{i+1}번] 이폼싸인(eformsign) 바로 실행", key=f"btn_eform_{i}", help="워드 문서를 열고 eformsign 모듈 버튼을 자동으로 실행합니다."):
-                            out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "output")
-                            os.makedirs(out_dir, exist_ok=True)
-                            safe_name = re.sub(r'[\\/*?:"<>|]', '_', saved_docx["name"])
-                            out_path = os.path.join(out_dir, safe_name)
-                            with open(out_path, "wb") as f_out:
-                                f_out.write(saved_docx["bytes"])
-                            
-                            with st.spinner("⏳ 워드를 실행하고 이폼싸인 모듈을 호출하는 중입니다..."):
-                                try:
-                                    from local_tools.eformsign_trigger import trigger_eformsign_in_word
-                                    ok = trigger_eformsign_in_word(out_path, "실행")
-                                    if ok:
-                                        st.success("🎉 이폼싸인 모듈이 성공적으로 호출되었습니다! 워드 창에서 전자결재를 계속 진행해 주세요.")
-                                    else:
-                                        st.error("🚨 이폼싸인 모듈 호출 실패: 워드가 정상 실행되었는지 확인해주세요.")
-                                except Exception as err:
-                                    st.error(f"🚨 이폼싸인 실행 에러: {err}")
 
 # ----------------- [3. 분석내용 불러오기] -----------------
 elif menu in [m_his, "🕒 분석내역 불러오기", "분석내역 불러오기", "🕒 분석내용 불러오기", "분석내용 불러오기"]:
