@@ -904,9 +904,9 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
     combined_total = past_sum + int(current_amt or 0)
     
     # 사용자 지정 포맷: 구매요구번호 XXXX건 동일과제, 동일업체 / 총 구매요청액 XXXX원
-    # 과거건이 여러 개일 경우 각 건의 금액을 전부 합산하여 단일 총합계 문구로 생성
+    # 과거건과 현재 요청건 금액을 모두 합산한 누적 총액(combined_total)으로 기재
     req_nos_str = ", ".join([str(m["req_no"]) for m in matching_records])
-    warn_msg = f"구매요구번호 {req_nos_str}건 동일과제, 동일업체 / 총 구매요청액 {past_sum:,}원"
+    warn_msg = f"구매요구번호 {req_nos_str}건 동일과제, 동일업체 / 총 구매요청액 {combined_total:,}원"
     
     return [warn_msg], combined_total, matching_records
 
