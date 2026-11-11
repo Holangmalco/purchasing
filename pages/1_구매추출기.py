@@ -383,12 +383,49 @@ def safe_int(val):
     except: return 0
 
 def safe_json_load(text):
-    try: return json.loads(text)
-    except:
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
-            try: return json.loads(match.group())
-            except: return None
+    if not text or not str(text).strip():
+        return None
+    raw = str(text).strip()
+    
+    # 1. 마크다운 코드블록(```json ... ```) 제거
+    raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
+    raw = re.sub(r'\s*```$', '', raw)
+    
+    # 2. 일반 json.loads 직렬 파싱 시도
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+        
+    # 3. 중괄호 { ... } 구간 정규식 추출
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if match:
+        snippet = match.group()
+        try:
+            return json.loads(snippet)
+        except Exception:
+            # Trailing comma (예: , } 또는 , ]) 제거
+            cleaned = re.sub(r',\s*([\}\]])', r'\1', snippet)
+            try:
+                return json.loads(cleaned)
+            except Exception:
+                pass
+                
+    # 4. 대괄호 배열 [ { ... } ] 형태 추출
+    match_arr = re.search(r'\[\s*\{.*\}\s*\]', raw, re.DOTALL)
+    if match_arr:
+        snippet_arr = match_arr.group()
+        try:
+            res = json.loads(snippet_arr)
+            return res[0] if isinstance(res, list) and len(res) > 0 else res
+        except Exception:
+            cleaned_arr = re.sub(r',\s*([\}\]])', r'\1', snippet_arr)
+            try:
+                res = json.loads(cleaned_arr)
+                return res[0] if isinstance(res, list) and len(res) > 0 else res
+            except Exception:
+                pass
+                
     return None
 
 def is_missing(val):
@@ -2481,29 +2518,37 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
 
             with st.container(border=True):
                 st.markdown("#### ✍️ 제미나이 분석 결과(JSON) 붙여넣기")
-                manual_json = st.text_area("결과값", height=150, label_visibility="collapsed", placeholder="여기에 결과값 { JSON } 형태를 그대로 붙여넣으세요.")
+                manual_json = st.text_area("결과값", height=150, label_visibility="collapsed", placeholder="여기에 결과값 { JSON } 형태를 그대로 붙여넣으세요.", key="manual_json_area")
                 
                 c_btn1, c_btn2 = st.columns(2)
                 with c_btn1:
                     if st.button("🚀 수동 데이터 시스템 적용", type="primary", width="stretch"):
-                        parsed_manual = safe_json_load(manual_json)
-                        if parsed_manual:
-                            if isinstance(parsed_manual, list) and len(parsed_manual) > 0:
-                                parsed_manual = parsed_manual[0]
-                            st.session_state[SESSION_AI_KEY] = parsed_manual
-                            st.session_state['api_failed'] = False
-                            st.session_state['ai_errors'] = []
-                            sync_ai_to_widgets(parsed_manual)
-                            st.success("✅ 수동 데이터가 완벽하게 적용되었습니다!")
-                            time.sleep(1)
-                            st.rerun() 
+                        raw_json_str = manual_json or st.session_state.get("manual_json_area", "")
+                        if not raw_json_str.strip():
+                            st.warning("⚠️ 입력창에 제미나이 분석 결과(JSON)를 먼저 붙여넣어주세요.")
+                            st.toast("⚠️ 입력창에 JSON 데이터를 먼저 붙여넣어주세요.")
                         else:
-                            st.error("🚨 형식 오류: 중괄호 { } 가 포함된 JSON 결과값을 정확히 붙여넣어주세요.")
+                            parsed_manual = safe_json_load(raw_json_str)
+                            if parsed_manual:
+                                if isinstance(parsed_manual, list) and len(parsed_manual) > 0:
+                                    parsed_manual = parsed_manual[0]
+                                st.session_state[SESSION_AI_KEY] = parsed_manual
+                                st.session_state['api_failed'] = False
+                                st.session_state['ai_errors'] = []
+                                sync_ai_to_widgets(parsed_manual)
+                                st.toast("✅ 수동 데이터가 시스템에 완벽하게 적용되었습니다!")
+                                st.success("✅ 수동 데이터가 완벽하게 적용되었습니다! 잠시 후 분석 화면으로 전환됩니다...")
+                                time.sleep(0.5)
+                                st.rerun() 
+                            else:
+                                st.error("🚨 형식 오류: JSON 결과값을 파싱할 수 없습니다. 중괄호 { } 가 온전히 포함되어 있는지 확인해주세요.")
+                                st.toast("🚨 JSON 파싱 실패: 형식을 다시 확인해주세요.")
                 with c_btn2:
                     if st.button("⏭️ AI 검증 포기하고 그냥 넘어가기", width="stretch"):
                         st.session_state[SESSION_AI_KEY] = {}
                         st.session_state['api_failed'] = False
                         st.session_state['ai_errors'] = []
+                        st.toast("⏩ AI 검증을 건너뛰고 기본 ERP 분석으로 진행합니다.")
                         st.rerun()
 
             st.stop() 
@@ -3002,11 +3047,14 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
             t_acc_num = st.text_input("계좌번호 (수정 가능)", value=def_acc, key="req_acc_num")
 
         st.divider()
-        if st.button("💾 현재 분석 내역을 시스템(DB)에 저장하기", type="primary", width="stretch"):
-            success, res_msg = execute_save_analysis()
+        if st.button("💾 현재 분석 내역을 시스템(DB)에 저장하기", type="primary", width="stretch", key="btn_save_analysis_db"):
+            with st.spinner("⏳ 로컬 캐시 및 구글 시트 DB에 저장 중입니다..."):
+                success, res_msg = execute_save_analysis()
             if success:
+                st.toast(f"✅ 구매요구번호 [{res_msg}] 건이 DB 및 구글 시트에 안전하게 저장되었습니다!")
                 st.success(f"✅ 구매요구번호 [{res_msg}] 건의 핵심 데이터가 로컬 및 구글 시트에 안전하게 저장되었습니다! '분석내용 불러오기' 메뉴에서 확인 가능합니다.")
             else:
+                st.toast(f"🚨 저장 실패: {res_msg}")
                 st.error(f"❌ 저장 실패: {res_msg}")
 
 # ----------------- [2. 구매계약 분석 및 발주서 자동 생성] -----------------
