@@ -314,7 +314,14 @@ def build_recommended_folder_name(dept, pi_name, vendor_name, req_no="", date_ob
     if c_req in ["확인요망", "미검출", "없음"]:
         c_req = ""
 
-    left_part = f"{c_dept} {c_pi}".strip()
+    if c_dept and c_pi:
+        if c_dept == c_pi:
+            left_part = c_pi
+        else:
+            left_part = f"{c_dept} {c_pi}".strip()
+    else:
+        left_part = f"{c_dept} {c_pi}".strip()
+
     if left_part:
         base_folder = f"({d_str}) {left_part} - {c_ven}"
     else:
@@ -562,6 +569,31 @@ def is_internal_sejong_email(email_str):
         if i_em and i_em == em:
             return True
             
+    return False
+
+# ==========================================
+# 💡 대학안전관리센터 특수 관리 규칙
+# ==========================================
+SAFETY_CENTER_INFO = {
+    "pi_name": "김수동 선생님",
+    "pi_dept": "김수동 선생님",
+    "pi_phone": "02-3408-4081",
+    "pi_email": "sudong_kim@sejong.ac.kr",
+    "pi_formatted": "김수동 선생님 / 02-3408-4081 / sudong_kim@sejong.ac.kr"
+}
+
+def is_safety_center_case(*texts):
+    """과제담당자 또는 관리기관이 대학안전관리센터인 건인지 판별"""
+    combined = " ".join([str(t or "") for t in texts])
+    if not combined.strip():
+        return False
+    clean = re.sub(r'\s+', '', combined)
+    # 1. '대학안전관리센터' 키워드 직접 포함
+    if "대학안전관리센터" in clean or "대학안전관리" in clean:
+        return True
+    # 2. '과제담당자' 또는 '관리기관' 근처에 '안전관리' 또는 '김수동'이 있는 경우
+    if ("과제담당자" in clean or "관리기관" in clean) and ("안전관리" in clean or "김수동" in clean):
+        return True
     return False
 
 def check_special_project_affiliation(pi_name, pi_dept, context_text=""):
@@ -913,10 +945,10 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
 # ==========================================
 # 3. 데이터 파싱 엔진
 # ==========================================
-def extract_base_info(text):
+def extract_base_info(text, extra_text=""):
     info = {
         'p_no': "⚠️ 확인 불가", 'req_no': "⚠️ 확인 불가", 'pi_name': "", 
-        'pi_dept': "", 'pi_formatted': "", 'prj_end': "", 'pi_email': ""
+        'pi_dept': "", 'pi_phone': "", 'pi_formatted': "", 'prj_end': "", 'pi_email': ""
     }
     
     p_no_match = re.search(r'(\d{4}-\d{4}-\d{2})', text)
@@ -935,7 +967,8 @@ def extract_base_info(text):
             info['pi_name'] = parts[0]
             info['pi_dept'] = parts[2] if len(parts) >= 5 else parts[1]
             info['pi_email'] = parts[-1] 
-            info['pi_formatted'] = f"{parts[0]} / {format_phone(parts[-2])} / {parts[-1]}"
+            info['pi_phone'] = format_phone(parts[-2])
+            info['pi_formatted'] = f"{parts[0]} / {info['pi_phone']} / {parts[-1]}"
             
             clean_text = text.replace(" ", "")
             prj_context_match = re.search(r'과제성격(.*?)(연구책임자정보|연차연구기간)', clean_text, flags=re.DOTALL)
@@ -943,6 +976,14 @@ def extract_base_info(text):
             info['pi_dept'] = check_special_project_affiliation(info['pi_name'], info['pi_dept'], prj_context)
         else:
             info['pi_formatted'] = pi_match.group(1).strip()
+            
+    # 💡 [특수 규칙] 과제담당자가 대학안전관리센터인 건은 문서 내 연구책임자 기재와 상관없이 강제 오버라이드
+    if is_safety_center_case(text, extra_text):
+        info['pi_name'] = SAFETY_CENTER_INFO['pi_name']
+        info['pi_dept'] = SAFETY_CENTER_INFO['pi_dept']
+        info['pi_phone'] = SAFETY_CENTER_INFO['pi_phone']
+        info['pi_email'] = SAFETY_CENTER_INFO['pi_email']
+        info['pi_formatted'] = SAFETY_CENTER_INFO['pi_formatted']
             
     return info
 
@@ -1511,6 +1552,14 @@ def extract_contract_info(text):
         else:
             result['pi_phone'] = raw_ph
         result['pi_email'] = pi_match.group(5).strip()
+
+    # 💡 [특수 규칙] 과제담당자가 대학안전관리센터인 건은 문서 내 연구책임자 기재와 상관없이 강제 오버라이드
+    if is_safety_center_case(clean_text, text):
+        result['pi_name'] = SAFETY_CENTER_INFO['pi_name']
+        result['pi_dept'] = SAFETY_CENTER_INFO['pi_dept']
+        result['pi_phone'] = SAFETY_CENTER_INFO['pi_phone']
+        result['pi_email'] = SAFETY_CENTER_INFO['pi_email']
+        result['pi_position'] = ""
     
     # 💡 납품장소 파싱 개선: B101호, 101-1호 등 방번호 원형 보존 및 슬래시 유연화
     loc_match = re.search(r'납품장소\s*(.*?)\s*(?:계약금액|총금액|$)', clean_text)
@@ -1551,8 +1600,15 @@ def extract_contract_info(text):
     
     # 💡 사용자가 직접 입력한 메모/정보가 최우선입니다.
     # 사용자가 입력한 실사용자 정보가 없을 때만(공란일 때만) 계약관리의 연구책임자정보를 fallback으로 반영합니다.
-    if not result['smart_memo'].get('user_name') and result.get('pi_name'):
-        result['smart_memo']['user_name'] = f"{result['pi_name']} {result.get('pi_position', '')}".strip()
+    # 단, 과제담당자가 대학안전관리센터인 건은 문서 내 연구책임자와 상관없이 무조건 김수동 선생님으로 강제 설정합니다.
+    if is_safety_center_case(clean_text, text):
+        result['smart_memo']['user_name'] = SAFETY_CENTER_INFO['pi_name']
+        result['smart_memo']['user_phone'] = SAFETY_CENTER_INFO['pi_phone']
+        result['smart_memo']['user_email'] = SAFETY_CENTER_INFO['pi_email']
+    elif not result['smart_memo'].get('user_name') and result.get('pi_name'):
+        pos = result.get('pi_position', '').strip()
+        pos_str = f" {pos}" if pos and not result['pi_name'].endswith(pos) else ""
+        result['smart_memo']['user_name'] = f"{result['pi_name']}{pos_str}".strip()
         if not result['smart_memo'].get('user_phone'):
             result['smart_memo']['user_phone'] = result.get('pi_phone', '')
         if not result['smart_memo'].get('user_email'):
@@ -2220,7 +2276,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         cur_req_type = st.session_state.get("saved_req_type", "📦 물품")
         cur_con_type = st.session_state.get("saved_con_type", "비교견적")
         
-        b_data = extract_base_info(cur_req)
+        b_data = extract_base_info(cur_req, cur_fin)
         if not b_data or not b_data.get('req_no'):
             return False, "구매요구번호를 찾을 수 없습니다."
             
@@ -2248,6 +2304,8 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                 item_mgrs.append(itm['contact'])
         unique_item_mgrs = list(dict.fromkeys(item_mgrs))
         final_item_mgr = " / ".join(unique_item_mgrs) if unique_item_mgrs else "⚠️ 미기재"
+        if final_item_mgr == "⚠️ 미기재" and b_data.get('pi_name') == SAFETY_CENTER_INFO['pi_name']:
+            final_item_mgr = b_data['pi_formatted']
 
         vendor_mgr_info = f"{v_rep} / {v_phn} / {v_eml}"
 
@@ -2553,7 +2611,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
 
             st.stop() 
         
-        base_data = extract_base_info(raw_req)
+        base_data = extract_base_info(raw_req, raw_fin)
         total_amt = get_accurate_total(raw_req, "합계액")
         
         if req_type == "📦 물품":
@@ -2886,6 +2944,9 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         with r2_c1: display_status_value("🏫 연구책임자 학과", base_data['pi_dept'])
         with r2_c2: display_status_value("💰 구매요청액", f"{total_amt:,}원")
         with r2_c3: display_status_value("📧 연구책임자 정보", base_data['pi_formatted'])
+
+        if base_data.get('pi_name') == SAFETY_CENTER_INFO['pi_name']:
+            st.info("ℹ️ **[대학안전관리센터 건 자동 적용]** 과제담당자가 대학안전관리센터인 건으로 감지되어 연구책임자 및 실사용자 정보가 **김수동 선생님 (02-3408-4081 / sudong_kim@sejong.ac.kr)**으로 자동 설정되었습니다.")
         
         st.divider()
         erp_itm_t = get_ui_text("ext_erp_items_title", "📦 ERP 품목 내역")
@@ -3154,23 +3215,33 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
 
                     # 2) 실사용자 정보 (물품담당자 또는 연구책임자)
                     c_unm, c_uph, c_uem = "", "", ""
-                    c_mgr_str = cached_meta.get("물품담당자", "")
-                    if c_mgr_str and "미기재" not in c_mgr_str and "없음" not in c_mgr_str:
-                        u_parts = [p.strip() for p in str(c_mgr_str).split("/")]
-                        if len(u_parts) >= 1: c_unm = u_parts[0]
-                        if len(u_parts) >= 2:
-                            if "@" in u_parts[1]: c_uem = u_parts[1]
-                            else: c_uph = u_parts[1]
-                        if len(u_parts) >= 3:
-                            if "@" in u_parts[2]: c_uem = u_parts[2]
-                            else: c_uph = u_parts[2]
+                    is_cached_safety = (
+                        cached_meta.get("연구책임자_성명") == SAFETY_CENTER_INFO["pi_name"] or 
+                        cached_meta.get("연구책임자_학과") == SAFETY_CENTER_INFO["pi_dept"] or
+                        is_safety_center_case(txt)
+                    )
+                    if is_cached_safety:
+                        c_unm = SAFETY_CENTER_INFO['pi_name']
+                        c_uph = SAFETY_CENTER_INFO['pi_phone']
+                        c_uem = SAFETY_CENTER_INFO['pi_email']
+                    else:
+                        c_mgr_str = cached_meta.get("물품담당자", "")
+                        if c_mgr_str and "미기재" not in c_mgr_str and "없음" not in c_mgr_str:
+                            u_parts = [p.strip() for p in str(c_mgr_str).split("/")]
+                            if len(u_parts) >= 1: c_unm = u_parts[0]
+                            if len(u_parts) >= 2:
+                                if "@" in u_parts[1]: c_uem = u_parts[1]
+                                else: c_uph = u_parts[1]
+                            if len(u_parts) >= 3:
+                                if "@" in u_parts[2]: c_uem = u_parts[2]
+                                else: c_uph = u_parts[2]
 
-                    # 실사용자 연락처/이메일 부재 시 USER_DB 조회
-                    if c_unm and (not c_uph or not c_uem):
-                        u_lookup = lookup_user_contact(c_unm)
-                        if u_lookup:
-                            if not c_uph: c_uph = u_lookup.get("phone", "")
-                            if not c_uem: c_uem = u_lookup.get("email", "")
+                        # 실사용자 연락처/이메일 부재 시 USER_DB 조회
+                        if c_unm and (not c_uph or not c_uem):
+                            u_lookup = lookup_user_contact(c_unm)
+                            if u_lookup:
+                                if not c_uph: c_uph = u_lookup.get("phone", "")
+                                if not c_uem: c_uem = u_lookup.get("email", "")
 
                     # 3) 비고사항
                     c_rem = cached_meta.get("비고사항") or (cached_data.get("remarks") if cached_data else "")
@@ -3195,15 +3266,21 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                         cd['vendor_name'] = cached_meta.get("업체명")
 
                     # 4) 연구책임자 학과/성명 연동 (발주서 자동 폴더 생성용)
-                    if not cd.get('pi_dept') and cached_meta.get("연구책임자_학과"):
-                        cd['pi_dept'] = cached_meta.get("연구책임자_학과")
-                    if not cd.get('pi_name') and cached_meta.get("연구책임자_성명"):
-                        cd['pi_name'] = cached_meta.get("연구책임자_성명")
-                    if (not cd.get('pi_dept') or not cd.get('pi_name')) and cached_meta.get("연구책임자정보"):
-                        pi_info_parts = str(cached_meta.get("연구책임자정보", "")).strip().split()
-                        if len(pi_info_parts) >= 2:
-                            if not cd.get('pi_dept'): cd['pi_dept'] = " ".join(pi_info_parts[:-1])
-                            if not cd.get('pi_name'): cd['pi_name'] = pi_info_parts[-1]
+                    if is_cached_safety:
+                        cd['pi_dept'] = SAFETY_CENTER_INFO["pi_dept"]
+                        cd['pi_name'] = SAFETY_CENTER_INFO["pi_name"]
+                        cd['pi_phone'] = SAFETY_CENTER_INFO["pi_phone"]
+                        cd['pi_email'] = SAFETY_CENTER_INFO["pi_email"]
+                    else:
+                        if not cd.get('pi_dept') and cached_meta.get("연구책임자_학과"):
+                            cd['pi_dept'] = cached_meta.get("연구책임자_학과")
+                        if not cd.get('pi_name') and cached_meta.get("연구책임자_성명"):
+                            cd['pi_name'] = cached_meta.get("연구책임자_성명")
+                        if (not cd.get('pi_dept') or not cd.get('pi_name')) and cached_meta.get("연구책임자정보"):
+                            pi_info_parts = str(cached_meta.get("연구책임자정보", "")).strip().split()
+                            if len(pi_info_parts) >= 2:
+                                if not cd.get('pi_dept'): cd['pi_dept'] = " ".join(pi_info_parts[:-1])
+                                if not cd.get('pi_name'): cd['pi_name'] = pi_info_parts[-1]
 
                 # 별도 메모창에 입력된 내용이 있으면 최우선 적용 (덮어쓰기)
                 if memo_txt.strip():
@@ -3264,6 +3341,9 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                     st.success(f"✨ **[구매추출기 DB 연동 완료]** 구매요구번호 `[{cd.get('req_no')}]`의 분석 데이터(업체담당자, 실사용자)를 자동으로 불러왔습니다.")
                     if cd.get('cached_remarks'):
                         st.info(f"💡 **[구매요청 시 비고사항]** {cd.get('cached_remarks')}")
+                
+                if cd.get('pi_name') == SAFETY_CENTER_INFO['pi_name']:
+                    st.info("ℹ️ **[대학안전관리센터 건 자동 적용]** 과제담당자가 대학안전관리센터인 건으로 감지되어 연구책임자 및 실사용자 정보가 **김수동 선생님 (02-3408-4081 / sudong_kim@sejong.ac.kr)**으로 자동 설정되었습니다.")
                 
                 # 💡 노션 비고란 실시간 즉시 반영 도구
                 with st.expander("⚡ 노션 비고란 메모 즉시 붙여넣기 (실사용자/업체 자동 배분)", expanded=False):
