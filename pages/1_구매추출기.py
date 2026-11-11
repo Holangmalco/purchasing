@@ -576,7 +576,7 @@ def is_internal_sejong_email(email_str):
 # ==========================================
 SAFETY_CENTER_INFO = {
     "pi_name": "김수동 선생님",
-    "pi_dept": "김수동 선생님",
+    "pi_dept": "대학안전관리센터",
     "pi_phone": "02-3408-4081",
     "pi_email": "sudong_kim@sejong.ac.kr",
     "pi_formatted": "김수동 선생님 / 02-3408-4081 / sudong_kim@sejong.ac.kr"
