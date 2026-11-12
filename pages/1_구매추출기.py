@@ -1574,7 +1574,15 @@ def extract_contract_info(text):
                 room_match = re.search(r'([A-Za-z0-9\-가-힣]+(?:호|실|층)?)', room_raw)
                 if room_match:
                     r_str = room_match.group(1).strip()
-                    if not r_str.endswith(('호', '실', '층')):
+                    # 💡 세종대 건물 코드 접두사(센, 광, 영, 충, 율 등) 및 불필요한 앞자리 0 정제
+                    # 예: '센0505' -> '505호', '광0312' -> '312호', '센B101' -> 'B101호'
+                    prefix_match = re.search(r'^[가-힣](0?\d{3,4}|[B\d]\d{2,4})(?:호|실|층)?$', r_str)
+                    if prefix_match:
+                        num_part = prefix_match.group(1).lstrip('0')
+                        r_str = f"{num_part}호"
+                    elif not r_str.endswith(('호', '실', '층')):
+                        if r_str.isdigit() and len(r_str) == 4 and r_str.startswith('0'):
+                            r_str = str(int(r_str))
                         r_str += "호"
                     result['location'] = f"{bldg} {r_str}"
                 else:
@@ -1589,7 +1597,7 @@ def extract_contract_info(text):
     
     # 본문에서 오인 추출된 과도하게 긴 vendor_rep 정제
     cur_vrep = result['smart_memo'].get('vendor_rep', '')
-    if cur_vrep and (len(cur_vrep) > 20 or any(bad in cur_vrep for bad in ['계약업체정보', '업체', '법인번호', '사업자번호', '주소'])):
+    if cur_vrep and (len(cur_vrep) > 20 or any(bad in cur_vrep for bad in ['계약업체정보', '업체', '법인번호', '사업자번호', '주소', '선정', '기타사항', '계약사유'])):
         result['smart_memo']['vendor_rep'] = ''
 
     # 💡 [핵심 가드] 세종대/USER_DB 이메일은 업체 메일 칸에 절대 남지 않도록 보증
