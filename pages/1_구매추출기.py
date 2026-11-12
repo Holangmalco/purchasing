@@ -3469,6 +3469,8 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                     with c_g1: st.text_input("📍 [위치: 발주서 생성 준비 버튼] ({no}는 번호)", value=btn_gen_pat, key="live_con_btn_gen")
                     with c_g2: st.text_input("📍 [위치: 완성본 다운로드 버튼] ({no}는 번호)", value=btn_dl_pat, key="live_con_btn_dl")
 
+                chk_test = st.checkbox("🧪 테스트용 파일명 적용 ('(테스트)' 접미사 추가)", value=True, key=f"chk_test_{i}", help="체크 시 '발주서 - 구매요구번호(테스트).docx' 형식으로 저장됩니다.")
+
                 if st.button(disp_gen_t, key=f"btn_gen_{i}"):
                     if not e_name or amt_val <= 0 or not e_ven or not u_nm:
                         st.error("🚨 필수 정보(계약건명, 계약금액, 협력사, 실사용자 성명)를 모두 입력해주세요.")
@@ -3513,10 +3515,11 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                             ts.seek(0)
 
                             clean_req = re.sub(r'[\\/*?:"<>|]', '', str(e_req).strip())
+                            test_suffix = "(테스트)" if chk_test else ""
                             if clean_req:
-                                target_fname = f"발주서 - {clean_req}.docx"
+                                target_fname = f"발주서 - {clean_req}{test_suffix}.docx"
                             else:
-                                target_fname = f"발주서 - { sanitize_win_name(e_name) }.docx" if e_name else f"발주서_{ sanitize_win_name(e_ven) }.docx"
+                                target_fname = f"발주서 - { sanitize_win_name(e_name) }{test_suffix}.docx" if e_name else f"발주서_{ sanitize_win_name(e_ven) }{test_suffix}.docx"
 
                             docx_bytes = ts.getvalue()
                             active_base_dir = st.session_state.get("con_work_base_dir", cur_con_base_dir).strip() or cur_con_base_dir
