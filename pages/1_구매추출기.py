@@ -1509,13 +1509,22 @@ def run_ai_analysis(files, req_type):
     return None, failure_history
 
 def extract_contract_info(text):
-    clean_text = text.replace('\n', ' ').replace('\r', '').replace('\t', ' ')
+    clean_text = ' '.join(text.split())
     info = {
-        'req_no': re.search(r'구매요구번호\s*\*?\s*(\d+)', clean_text),
-        'con_name': re.search(r'계약건명\s*(.*?)\s*(?:납품기간|계약금액|총금액|납품장소|$)', clean_text),
-        'con_amount': re.search(r'계약금액\s*([\d,]+)', clean_text),
-        'con_deposit': re.search(r'계약보증금\s*([\d,]+)', clean_text),
-        'vendor_name': re.search(r'계약업체명\s*(.*?)\s*(?:사업자번호|대표자|전화번호|$)', clean_text),
+        'req_no': (
+            re.search(r'구매요구번호\s*\*?\s*[:\s]*\s*(\d{10,14})', clean_text) or
+            re.search(r'구매요구번호\s*\*?\s*[:\s]*\s*(\d+)', clean_text)
+        ),
+        'con_name': (
+            re.search(r'계약건명\s*[:\s]*\s*(.*?)\s*(?:납품기간|계약금액|공급가액|총금액|납품장소|$)', clean_text) or
+            re.search(r'계약명\s*[:\s]*\s*(.*?)\s*(?:보완사항|진행상태|납품기간|계약정보|$)', clean_text)
+        ),
+        'con_amount': re.search(r'계약금액\s*[:\s]*\s*([\d,]+)', clean_text),
+        'con_deposit': re.search(r'계약보증금\s*[:\s]*\s*([\d,]+)', clean_text),
+        'vendor_name': (
+            re.search(r'계약업체명\s*[:\s]*\s*(.*?)\s*(?:사업자번호|법인번호|대표자|전화번호|$)', clean_text) or
+            re.search(r'업체명\s*[:\s]*\s*(.*?)\s*(?:사업자번호|대표자|$)', clean_text)
+        ),
         'buyer_name': (
             re.search(r'계약담당자\s*(.*?)\s*접수일자', clean_text) or 
             re.search(r'계약담당자\s*([^\s]+)', clean_text) or
@@ -3158,10 +3167,10 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
             st.markdown(f"##### {disp_card_t}")
             c_txt1, c_txt2 = st.columns([3, 2])
             with c_txt1:
-                txt = st.text_area(f"{i+1}️⃣ 구매계약 화면 본문", height=100, key=f"raw_con_input_{i}", placeholder="rERP 구매계약 화면의 텍스트를 복사해 붙여넣으세요.")
+                txt = st.text_area(f"{i+1}️⃣ rERP 구매계약 화면 본문 (필수)", height=100, key=f"raw_con_input_{i}", placeholder="rERP 구매계약 화면 전체 텍스트를 복사해 붙여넣으세요.\n(구매요구번호, 계약건명, 계약금액, 협력사, 납품장소 등 자동 추출)")
                 raw_cons.append(txt)
             with c_txt2:
-                memo = st.text_area(f"📌 {i+1}번 노션 메모 (선택)", height=100, key=f"raw_con_memo_{i}", placeholder="예:\n실사용자: 정영권 교수 01033246327 ykjung@sejong.ac.kr\n업체담당자: 김철수 01099998888 cs@vendor.com")
+                memo = st.text_area(f"📌 {i+1}번 실사용자/업체 메모 (선택)", height=100, key=f"raw_con_memo_{i}", placeholder="노션 비고란 또는 실사용자/업체 메모를 붙여넣으세요.\n예:\n실사용자 전창재 교수 / 010-9557-7681 cchun@sejong.ac.kr\n업체담당자 권명규 / 010-6633-4911 miri8337@naver.com")
                 raw_memos.append(memo)
     
     if st.button("➕ 입력창 1개 더 추가하기", type="secondary"):
@@ -3180,16 +3189,40 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
             st.session_state.pop('multi_con_data', None)
             st.session_state['con_input_count'] = 2 
             for k in list(st.session_state.keys()):
-                if k.startswith("raw_con_input_") or k.startswith("raw_con_memo_") or k.startswith("u_") or k.startswith("v_"):
+                if (k.startswith("raw_con_input_") or k.startswith("raw_con_memo_") or 
+                    k.startswith("u_") or k.startswith("v_") or k.startswith("e_") or 
+                    k.startswith("ptype_") or k.startswith("b_") or k.startswith("i_") or 
+                    k.startswith("chk_test_") or k.startswith("qmemo_") or k.startswith("last_gen_docx_")):
                     del st.session_state[k]
             st.rerun()
 
     if start_con:
         valid_data = []
-        for idx, txt in enumerate(raw_cons):
-            memo_txt = raw_memos[idx] if idx < len(raw_memos) else ""
-            if txt.strip() or memo_txt.strip(): 
+        for idx, raw_txt in enumerate(raw_cons):
+            raw_memo = raw_memos[idx] if idx < len(raw_memos) else ""
+            txt = (raw_txt or "").strip()
+            memo_txt = (raw_memo or "").strip()
+
+            if txt or memo_txt: 
+                # 💡 [스마트 스왑 & 상호 보완 방어]
+                # 사용자가 rERP 계약 본문과 실사용자/업체 메모를 반대로 입력했거나 한쪽에 몰아넣은 경우 자동 감지
+                erp_keywords = ['구매요구번호', '계약건명', '계약명', '계약금액', '계약업체명', '구매계약서', '문서번호', '과제정보', '사업장/회계단위', '물품내역']
+                txt_has_erp = any(k in txt for k in erp_keywords)
+                memo_has_erp = any(k in memo_txt for k in erp_keywords)
+
+                if not txt_has_erp and memo_has_erp:
+                    # 반대로 입력된 경우 자동 스왑
+                    txt, memo_txt = memo_txt, txt
+                    txt_has_erp, memo_has_erp = True, False
+
                 cd = extract_contract_info(txt)
+
+                # txt에서 계약정보(계약건명, 요구번호, 업체명 등)를 완전히 추출하지 못했고 memo_txt에 잔여 키워드가 있는 경우 보완
+                if (not cd.get('con_name') or not cd.get('req_no') or not cd.get('vendor_name')) and memo_has_erp:
+                    cd_alt = extract_contract_info(memo_txt)
+                    for k_need in ['con_name', 'req_no', 'con_amount', 'con_deposit', 'vendor_name', 'buyer_name', 'location', 'pi_name', 'pi_dept', 'pi_phone', 'pi_email']:
+                        if not cd.get(k_need) and cd_alt.get(k_need):
+                            cd[k_need] = cd_alt[k_need]
 
                 # -------------------------------------------------------------
                 # 💡 [Part 2 - 제안 1] 구매요구번호 기준 캐시(DB) 자동 조회 및 프리필
@@ -3291,18 +3324,52 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                                 if not cd.get('pi_name'): cd['pi_name'] = pi_info_parts[-1]
 
                 # 별도 메모창에 입력된 내용이 있으면 최우선 적용 (덮어쓰기)
-                if memo_txt.strip():
+                if memo_txt:
                     memo_info = parse_smart_contact_memo(memo_txt)
                     if 'smart_memo' not in cd: cd['smart_memo'] = {}
                     for mk, mv in memo_info.items():
                         if mv: cd['smart_memo'][mk] = mv
+                
+                # txt에 복사된 실사용자/업체 메모가 있다면 빈 항목에 한해 보완
+                if txt:
+                    txt_memo_info = parse_smart_contact_memo(txt)
+                    if 'smart_memo' not in cd: cd['smart_memo'] = {}
+                    for mk, mv in txt_memo_info.items():
+                        if mv and not cd['smart_memo'].get(mk):
+                            cd['smart_memo'][mk] = mv
 
                 valid_data.append(cd)
         
         if valid_data:
             st.session_state['multi_con_data'] = valid_data
-            # 세션 스테이트에 스마트 파서 값 세팅
+            # 💡 [핵심] Streamlit 위젯 session_state 동기화
+            # Streamlit은 widget key가 session_state에 존재하면 widget의 value= 인자를 무시하므로,
+            # 버튼 클릭 시 모든 폼 필드를 session_state에 강제 주입하여 UI에 즉시 표시되도록 합니다.
             for i, cd in enumerate(valid_data):
+                st.session_state[f"e_nm_{i}"] = cd.get('con_name', '')
+                st.session_state[f"e_amt_{i}"] = str(safe_int(cd.get('con_amount', '0')))
+                st.session_state[f"e_ven_{i}"] = cd.get('vendor_name', '')
+                st.session_state[f"e_req_{i}"] = cd.get('req_no', '')
+                st.session_state[f"e_loc_{i}"] = cd.get('location', '')
+
+                amt_int = safe_int(cd.get('con_amount', 0))
+                dep_int = safe_int(cd.get('con_deposit', 0)) or (amt_int // 10 if amt_int > 0 else 0)
+                st.session_state[f"e_dep_{i}"] = str(dep_int)
+
+                st.session_state[f"ptype_{i}"] = "🏫 신임교원지원사업 (교비)" if cd.get('project_type') == "신임교원지원사업" else "🏢 일반 중앙구매 (산학협력단)"
+
+                buyer_options = list(BUYER_STAFF.keys()) + ["직접입력"]
+                extracted_buyer = cd.get('buyer_name', '')
+                matched_buyer = buyer_options[0]
+                for b_opt in buyer_options:
+                    if b_opt != "직접입력":
+                        b_st_name = BUYER_STAFF[b_opt].get("name", "")
+                        if b_st_name and b_st_name in extracted_buyer:
+                            matched_buyer = b_opt
+                            break
+                st.session_state[f"b_sel_{i}"] = matched_buyer
+                st.session_state[f"i_nm_{i}"] = INSPECTOR_INFO.get("name", "경제용")
+
                 sm = cd.get('smart_memo', {})
                 u_em_c = sm.get('user_email', cd.get('email', ''))
                 v_em_c = sm.get('vendor_email', '')
@@ -3373,7 +3440,8 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
 
                 # 💡 사업 구분 (신임교원지원사업 vs 일반 중앙구매) 자동 선택 및 수동 변경
                 ptype_options = ["🏢 일반 중앙구매 (산학협력단)", "🏫 신임교원지원사업 (교비)"]
-                default_p_idx = 1 if cd.get('project_type') == "신임교원지원사업" else 0
+                saved_ptype = st.session_state.get(f"ptype_{i}")
+                default_p_idx = 1 if (saved_ptype == "🏫 신임교원지원사업 (교비)" or cd.get('project_type') == "신임교원지원사업") else 0
                 c_pt1, c_pt2 = st.columns([1, 2])
                 with c_pt1:
                     sel_ptype = st.selectbox("사업 구분", ptype_options, index=default_p_idx, key=f"ptype_{i}")
@@ -3384,18 +3452,18 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                         st.caption("🏢 **일반 중앙구매(산학협력단)** 양식이 적용됩니다. (사업자등록증: 산학협력단)")
 
                 c1, c2, c3 = st.columns(3)
-                with c1: e_name = st.text_input("계약건명 (발주개요)", value=cd.get('con_name', ''), key=f"e_nm_{i}")
-                with c2: e_amt = st.text_input("계약금액 (숫자만)", value=cd.get('con_amount', '0'), key=f"e_amt_{i}")
-                with c3: e_ven = st.text_input("협력사 (업체명)", value=cd.get('vendor_name', ''), key=f"e_ven_{i}")
+                with c1: e_name = st.text_input("계약건명 (발주개요)", value=st.session_state.get(f"e_nm_{i}", cd.get('con_name', '')), key=f"e_nm_{i}")
+                with c2: e_amt = st.text_input("계약금액 (숫자만)", value=st.session_state.get(f"e_amt_{i}", str(cd.get('con_amount', '0'))), key=f"e_amt_{i}")
+                with c3: e_ven = st.text_input("협력사 (업체명)", value=st.session_state.get(f"e_ven_{i}", cd.get('vendor_name', '')), key=f"e_ven_{i}")
 
                 c4, c5, c6 = st.columns([1.2, 1, 1.5])
                 with c4:
-                    e_req = st.text_input("구매요구번호", value=cd.get('req_no', ''), key=f"e_req_{i}", placeholder="예: 202603120005")
+                    e_req = st.text_input("구매요구번호", value=st.session_state.get(f"e_req_{i}", cd.get('req_no', '')), key=f"e_req_{i}", placeholder="예: 202603120005")
                 with c5:
                     delivery_options = ["납품장소도", "현장설치도", "용역", "공사", "기타"]
                     e_deliv = st.selectbox("납품방법", delivery_options, key=f"e_del_{i}")
                 with c6:
-                    e_loc = st.text_input("납품장소", value=cd.get('location', ''), key=f"e_loc_{i}")
+                    e_loc = st.text_input("납품장소", value=st.session_state.get(f"e_loc_{i}", cd.get('location', '')), key=f"e_loc_{i}")
 
                 sm_data = cd.get('smart_memo', {})
                 default_u_nm = st.session_state.get(f"u_nm_{i}", sm_data.get('user_name', ''))
@@ -3453,7 +3521,7 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                 with c_b3:
                     # 💡 기본 계약보증금: 계약금액의 10% (1000만원 미만도 지급각서에 정확히 반영)
                     auto_deposit = amt_val // 10 if amt_val > 0 else 0
-                    default_dep = str(safe_int(cd.get('con_deposit')) or auto_deposit)
+                    default_dep = st.session_state.get(f"e_dep_{i}") or str(safe_int(cd.get('con_deposit')) or auto_deposit)
                     e_deposit = st.text_input("계약보증금액", value=default_dep, key=f"e_dep_{i}")
                     calc_deposit = safe_int(e_deposit) or auto_deposit
                     if calc_deposit > 0:
