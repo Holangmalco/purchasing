@@ -32,6 +32,21 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from google import genai
 from google.genai import types
 
+_SCRAPER_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _SCRAPER_ROOT_DIR not in sys.path:
+    sys.path.insert(0, _SCRAPER_ROOT_DIR)
+
+from shared_rules import (
+    SAFETY_CENTER_INFO,
+    build_recommended_folder_name,
+    check_special_project_affiliation,
+    extract_req_no,
+    extract_special_project_context,
+    is_safety_center_case,
+    load_shared_app_config,
+    sanitize_win_name,
+)
+
 # =================================================================
 # 0. GUI 및 로그 큐 헬퍼
 # =================================================================
@@ -63,6 +78,9 @@ class QueueStdout:
 # 1. 시스템 및 API 키 세팅 (.env)
 # =================================================================
 load_dotenv()
+_root_env = os.path.join(_SCRAPER_ROOT_DIR, ".env")
+if os.path.exists(_root_env):
+    load_dotenv(_root_env)
 
 # 상위 폴더의 .env까지 뒤져서 환경변수 확인
 dev_env = os.path.join(r"C:\PurchasingExtractor_Dev", ".env")
@@ -138,10 +156,14 @@ ai_client = genai.Client(api_key=GEMINI_KEY, http_options={"api_version": "v1bet
 # =================================================================
 env_target = os.getenv("TARGET_DIR", "").strip()
 desktop_dir = os.path.join(os.path.expanduser("~"), "Desktop")
-default_dir = os.path.join(desktop_dir, "★업무", "1. 2026학년도 구매요청")
+default_dir = os.path.join(desktop_dir, "구매업무")
+shared_cfg = load_shared_app_config({"work_base_dir": default_dir})
+cfg_target = str(shared_cfg.get("work_base_dir") or "").strip()
 
 if env_target:
     BASE_TARGET_DIR = env_target
+elif cfg_target:
+    BASE_TARGET_DIR = cfg_target
 else:
     BASE_TARGET_DIR = default_dir
 
@@ -160,8 +182,7 @@ driver = None
 # 💡 [유틸] 안전 파일명 & ZIP 한글 깨짐 방지 압축 해제
 # =================================================================
 def sanitize_filename(name):
-    clean = re.sub(r'[\\/*?:"<>|]', '_', str(name)).strip()
-    return clean[:60]
+    return sanitize_win_name(name)[:60]
 
 def extract_zip_safe(zip_path, target_dir):
     os.makedirs(target_dir, exist_ok=True)
@@ -265,6 +286,7 @@ def create_notion_summary(ai_data, erp_info):
     lines.append("### 📌 기본 정보")
     lines.append(f"- **문서 제목:** {erp_info.get('subject')}")
     lines.append(f"- **문서 번호:** {erp_info.get('doc_no')}")
+    lines.append(f"- **구매요구번호:** {erp_info.get('req_no') or '-'}")
     
     vendor = ai_data.get('업체명', '확인필요') if ai_data else '서류확인필요'
     biz_no = ai_data.get('사업자번호', '-') if ai_data else '-'
@@ -426,7 +448,8 @@ def process_current_detail_window(default_folder_hint="구매요청"):
         # 1. 화면 전체 텍스트 수집
         body_text = driver.find_element(By.TAG_NAME, "body").text
 
-        # 2. ERP 본문 정보 파싱 (일자, 학과, 연구책임자성명, 기안자, 건명)
+        # 2. ERP 본문 정보 파싱 (일자, 학과, 연구책임자성명, 기안자, 건명, 구매요구번호)
+        req_no = extract_req_no(body_text)
         doc_no = ""
         doc_match = re.search(r'문서번호\s*[:\s]*([0-9A-Za-z-]+)', body_text)
         if doc_match: doc_no = doc_match.group(1).strip()
@@ -451,15 +474,18 @@ def process_current_detail_window(default_folder_hint="구매요청"):
             if len(parts) >= 3: pi_dept = parts[2]
             elif len(parts) >= 2: pi_dept = parts[1]
 
-            clean_body = body_text.replace(" ", "")
-            if pi_name == "박재우" and ("지역혁신중심" in clean_body or "RISE" in clean_body.upper() or "라이즈" in clean_body):
-                pi_dept += "(RISE사업단)"
-            elif pi_name == "김재호" and "사물인터넷" in clean_body:
-                pi_dept += "(사물인터넷혁신융합대학사업단)"
-            elif pi_name == "송오영" and "SW중심대학" in clean_body:
-                pi_dept += "(SW중심대학사업단)"
-            elif pi_name == "이기학" and ("G-LAMP" in clean_body.upper() or "GLAMP" in clean_body.upper() or "대학기초연구소" in clean_body):
-                pi_dept += "(G-LAMP사업단)"
+            cur_cfg = load_shared_app_config()
+            prj_context = extract_special_project_context(body_text)
+            pi_dept = check_special_project_affiliation(
+                pi_name,
+                pi_dept,
+                prj_context,
+                special_projects=cur_cfg.get("special_projects"),
+            )
+
+        if is_safety_center_case(body_text):
+            pi_name = SAFETY_CENTER_INFO["pi_name"]
+            pi_dept = SAFETY_CENTER_INFO["pi_dept"]
 
         # 건명 추출
         subject = default_folder_hint
@@ -473,11 +499,14 @@ def process_current_detail_window(default_folder_hint="구매요청"):
             "pi_name": pi_name if pi_name else (author if author else "신청자"),
             "author": author if author else "기안자",
             "subject": subject,
-            "doc_no": doc_no
+            "doc_no": doc_no,
+            "req_no": req_no,
         }
 
         # 3. 임시 1차 폴더 생성: (2026.10.14) 학과 연구책임자 - [분석중]
-        temp_folder_name = f"({erp_info['date']}) {erp_info['pi_dept']} {erp_info['pi_name']} - [분석중]"
+        temp_folder_name = sanitize_win_name(
+            f"({erp_info['date']}) {erp_info['pi_dept']} {erp_info['pi_name']} - [분석중]"
+        )
         temp_dir = os.path.join(BASE_TARGET_DIR, temp_folder_name)
         os.makedirs(temp_dir, exist_ok=True)
         print(f"  [*] 1단계 임시 폴더 생성: {temp_folder_name}")
@@ -547,8 +576,14 @@ def process_current_detail_window(default_folder_hint="구매요청"):
             nf.write(notion_md)
         print("  [+] 노션 복사용 요약문 (노션_복사용.txt) 생성 완료")
 
-        # 7. 최종 폴더명 변경 (규칙: (년.월.일) 학과 연구책임자성명 - 최저가업체명)
-        final_folder_name = f"({erp_info['date']}) {erp_info['pi_dept']} {erp_info['pi_name']} - {vendor_name}"
+        # 7. 최종 폴더명 변경 (웹 앱 공통 규칙: (YYYY.MM.DD) 학과 연구책임자 - 최저가업체명 (구매요구번호))
+        final_folder_name = build_recommended_folder_name(
+            erp_info['pi_dept'],
+            erp_info['pi_name'],
+            vendor_name,
+            req_no=erp_info.get('req_no', ''),
+            date_str=erp_info['date'],
+        )
         final_dir = os.path.join(BASE_TARGET_DIR, final_folder_name)
         
         # 중복 폴더명 방어

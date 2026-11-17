@@ -942,7 +942,7 @@ def launch_main_gui():
             lbl_logo = ctk.CTkLabel(
                 brand_frame,
                 text="구매부서 유틸리티",
-                font=("Segoe UI", 16, "bold"),
+                font=("Segoe UI", 17, "bold"),
                 text_color="#191F28"
             )
             lbl_logo.pack(anchor="w")
@@ -951,7 +951,7 @@ def launch_main_gui():
             lbl_sec1 = ctk.CTkLabel(
                 self.sidebar,
                 text="PDF 도구",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#8B95A1"
             )
             lbl_sec1.pack(anchor="w", padx=18, pady=(8, 4))
@@ -969,7 +969,7 @@ def launch_main_gui():
                 btn = ctk.CTkButton(
                     self.sidebar,
                     text=label,
-                    font=("Segoe UI", 12),
+                    font=("Segoe UI", 14),
                     height=36,
                     corner_radius=8,
                     anchor="w",
@@ -985,7 +985,7 @@ def launch_main_gui():
             lbl_sec2 = ctk.CTkLabel(
                 self.sidebar,
                 text="파일명 복구",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#8B95A1"
             )
             lbl_sec2.pack(anchor="w", padx=18, pady=(12, 4))
@@ -993,7 +993,7 @@ def launch_main_gui():
             btn_fixer = ctk.CTkButton(
                 self.sidebar,
                 text="🛠️  자소 분리 복구",
-                font=("Segoe UI", 12),
+                font=("Segoe UI", 14),
                 height=36,
                 corner_radius=8,
                 anchor="w",
@@ -1012,15 +1012,15 @@ def launch_main_gui():
             lbl_sys = ctk.CTkLabel(
                 sys_frame,
                 text="시스템 설정",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#4E5968"
             )
             lbl_sys.pack(anchor="w", padx=10, pady=(8, 4))
 
-            btn_reg = ctk.CTkButton(
+            self.btn_reg = ctk.CTkButton(
                 sys_frame,
                 text="우클릭 메뉴 등록",
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 13),
                 height=28,
                 corner_radius=6,
                 fg_color="#FFFFFF",
@@ -1030,12 +1030,12 @@ def launch_main_gui():
                 border_color="#E5E8EB",
                 command=self._on_register_menu
             )
-            btn_reg.pack(fill="x", padx=8, pady=2)
+            self.btn_reg.pack(fill="x", padx=8, pady=2)
 
-            btn_unreg = ctk.CTkButton(
+            self.btn_unreg = ctk.CTkButton(
                 sys_frame,
                 text="우클릭 메뉴 삭제",
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 13),
                 height=28,
                 corner_radius=6,
                 fg_color="#FFFFFF",
@@ -1045,12 +1045,12 @@ def launch_main_gui():
                 border_color="#E5E8EB",
                 command=self._on_unregister_menu
             )
-            btn_unreg.pack(fill="x", padx=8, pady=2)
+            self.btn_unreg.pack(fill="x", padx=8, pady=2)
 
-            btn_sc = ctk.CTkButton(
+            self.btn_sc = ctk.CTkButton(
                 sys_frame,
                 text="바탕화면 바로가기",
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 13),
                 height=28,
                 corner_radius=6,
                 fg_color="#FFFFFF",
@@ -1060,7 +1060,7 @@ def launch_main_gui():
                 border_color="#E5E8EB",
                 command=self._on_create_shortcut
             )
-            btn_sc.pack(fill="x", padx=8, pady=(2, 8))
+            self.btn_sc.pack(fill="x", padx=8, pady=(2, 8))
 
         def _build_content_area(self):
             self.main_content = ctk.CTkFrame(self, fg_color="#F8F9FA", corner_radius=0)
@@ -1075,7 +1075,7 @@ def launch_main_gui():
             self.lbl_mode_title = ctk.CTkLabel(
                 self.header_frame,
                 text="사진·문서 변환",
-                font=("Segoe UI", 18, "bold"),
+                font=("Segoe UI", 20, "bold"),
                 text_color="#191F28"
             )
             self.lbl_mode_title.pack(anchor="w")
@@ -1083,7 +1083,7 @@ def launch_main_gui():
             self.lbl_mode_desc = ctk.CTkLabel(
                 self.header_frame,
                 text="이미지(JPG, PNG) 및 문서(Word, Excel, HWP) ➔ PDF 변환",
-                font=("Segoe UI", 12),
+                font=("Segoe UI", 14),
                 text_color="#6B7684"
             )
             self.lbl_mode_desc.pack(anchor="w", pady=(2, 0))
@@ -1098,36 +1098,40 @@ def launch_main_gui():
             )
             self.drop_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
 
-            drop_inner = ctk.CTkFrame(self.drop_card, fg_color="transparent")
-            drop_inner.pack(fill="both", expand=True, padx=20, pady=20)
+            self.drop_inner = ctk.CTkFrame(self.drop_card, fg_color="transparent")
+            self.drop_inner.pack(fill="both", expand=True, padx=20, pady=20)
 
-            self.lbl_drop_icon = ctk.CTkLabel(drop_inner, text="📷", font=("Segoe UI Emoji", 34))
+            self.lbl_drop_icon = ctk.CTkLabel(
+                self.drop_inner,
+                text="📷",
+                font=("Segoe UI Emoji", 34)
+            )
             self.lbl_drop_icon.pack(pady=(0, 2))
 
             self.lbl_drop_title = ctk.CTkLabel(
-                drop_inner,
+                self.drop_inner,
                 text="변환할 파일을 여기에 놓으세요",
-                font=("Segoe UI", 14, "bold"),
+                font=("Segoe UI", 16, "bold"),
                 text_color="#191F28"
             )
             self.lbl_drop_title.pack()
 
             self.lbl_drop_sub = ctk.CTkLabel(
-                drop_inner,
+                self.drop_inner,
                 text="드래그 앤 드롭 시 즉시 실행",
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 13),
                 text_color="#8B95A1"
             )
             self.lbl_drop_sub.pack(pady=(2, 14))
 
             # 작업 버튼 바
-            self.action_btn_frame = ctk.CTkFrame(drop_inner, fg_color="transparent")
+            self.action_btn_frame = ctk.CTkFrame(self.drop_inner, fg_color="transparent")
             self.action_btn_frame.pack()
 
             self.btn_pick_primary = ctk.CTkButton(
                 self.action_btn_frame,
                 text="파일 선택",
-                font=("Segoe UI", 12, "bold"),
+                font=("Segoe UI", 14, "bold"),
                 height=36,
                 corner_radius=18,
                 fg_color="#3182F6",
@@ -1139,7 +1143,7 @@ def launch_main_gui():
             self.btn_pick_folder = ctk.CTkButton(
                 self.action_btn_frame,
                 text="폴더 선택",
-                font=("Segoe UI", 12, "bold"),
+                font=("Segoe UI", 14, "bold"),
                 height=36,
                 corner_radius=18,
                 fg_color="#E8F3FF",
@@ -1176,28 +1180,28 @@ def launch_main_gui():
             lbl_log_title = ctk.CTkLabel(
                 log_header,
                 text="처리 내역",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#333D4B"
             )
             lbl_log_title.pack(side="left")
 
-            btn_clear = ctk.CTkButton(
+            self.btn_clear = ctk.CTkButton(
                 log_header,
                 text="비우기",
-                width=50,
-                height=22,
+                font=("Segoe UI", 13),
+                width=58,
+                height=26,
                 corner_radius=10,
-                font=("Segoe UI", 10),
                 fg_color="#F2F4F6",
                 text_color="#6B7684",
                 hover_color="#E5E8EB",
                 command=self.clear_log
             )
-            btn_clear.pack(side="right")
+            self.btn_clear.pack(side="right")
 
             self.txt_log = ctk.CTkTextbox(
                 self.log_card,
-                font=("Consolas", 10),
+                font=("Consolas", 13),
                 fg_color="#F8F9FA",
                 text_color="#333D4B",
                 corner_radius=8,
@@ -1216,7 +1220,7 @@ def launch_main_gui():
                 self.opt_conv,
                 text="사진 1개 PDF로 병합",
                 variable=self.img_merge_var,
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#191F28",
                 progress_color="#3182F6"
             )
@@ -1225,7 +1229,7 @@ def launch_main_gui():
             lbl_excel = ctk.CTkLabel(
                 self.opt_conv,
                 text="엑셀 맞춤:",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#4E5968"
             )
             lbl_excel.pack(side="left", padx=(10, 6))
@@ -1234,7 +1238,7 @@ def launch_main_gui():
                 self.opt_conv,
                 values=["너비 1페이지", "시트 전체 1장", "원본 유지"],
                 variable=self.excel_fit_var,
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 13),
                 corner_radius=6,
                 selected_color="#3182F6",
                 selected_hover_color="#1B64DA"
@@ -1247,7 +1251,7 @@ def launch_main_gui():
                 self.opt_merge,
                 text="가나다순 자동 정렬",
                 variable=self.pdf_sort_var,
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#191F28",
                 progress_color="#3182F6"
             )
@@ -1258,7 +1262,7 @@ def launch_main_gui():
             lbl_split = ctk.CTkLabel(
                 self.opt_split,
                 text="추출 범위:",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#191F28"
             )
             lbl_split.pack(side="left", padx=(14, 6), pady=10)
@@ -1270,7 +1274,7 @@ def launch_main_gui():
                 width=260,
                 height=32,
                 corner_radius=6,
-                font=("Segoe UI", 11)
+                font=("Segoe UI", 13)
             )
             self.ent_split.pack(side="left", padx=(0, 14), pady=10)
 
@@ -1279,7 +1283,7 @@ def launch_main_gui():
             lbl_comp = ctk.CTkLabel(
                 self.opt_compress,
                 text="압축 강도:",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#191F28"
             )
             lbl_comp.pack(side="left", padx=(14, 6), pady=10)
@@ -1288,7 +1292,7 @@ def launch_main_gui():
                 self.opt_compress,
                 values=["보통 (150 DPI)", "고압축 (100 DPI)"],
                 variable=self.compress_level_var,
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 13),
                 corner_radius=6,
                 selected_color="#3182F6"
             )
@@ -1299,7 +1303,7 @@ def launch_main_gui():
             lbl_rot = ctk.CTkLabel(
                 self.opt_rotate,
                 text="회전 각도:",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 13, "bold"),
                 text_color="#191F28"
             )
             lbl_rot.pack(side="left", padx=(14, 6), pady=10)
@@ -1308,7 +1312,7 @@ def launch_main_gui():
                 self.opt_rotate,
                 values=["90° ↻", "180°", "270° ↺"],
                 variable=self.rotate_angle_var,
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 13),
                 corner_radius=6,
                 selected_color="#3182F6"
             )
@@ -1319,27 +1323,28 @@ def launch_main_gui():
             lbl_fixer_info = ctk.CTkLabel(
                 self.opt_fixer,
                 text="맥북(NFD) 자소 분리 및 인코딩 오류 복구",
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 13),
                 text_color="#4E5968"
             )
             lbl_fixer_info.pack(side="left", padx=14, pady=10)
 
         def set_mode(self, mode):
+            prev_mode = self.current_mode
             self.current_mode = mode
 
-            # 사이드바 활성화 스타일
+            # 사이드바 활성화 스타일 (변경된 버튼만 갱신)
             for k, btn in self.nav_buttons.items():
                 if k == mode:
                     btn.configure(
                         fg_color="#E8F3FF",
                         text_color="#1B64DA",
-                        font=("Segoe UI", 12, "bold")
+                        font=("Segoe UI", 14, "bold")
                     )
-                else:
+                elif k == prev_mode or btn.cget("fg_color") != "transparent":
                     btn.configure(
                         fg_color="transparent",
                         text_color="#4E5968",
-                        font=("Segoe UI", 12)
+                        font=("Segoe UI", 14)
                     )
 
             # 기존 옵션 숨기기

@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import sys
 
 # 파이썬에게 "지금 이 Purchasing.py 파일이 들어있는 폴더를 모든 작업의 '본진'으로 삼아라!"라고 명령합니다.
 # os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -16,6 +17,29 @@ from io import BytesIO
 from docxtpl import DocxTemplate
 from dotenv import load_dotenv
 import requests
+
+_PAGE_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PAGE_ROOT_DIR not in sys.path:
+    sys.path.insert(0, _PAGE_ROOT_DIR)
+
+from shared_rules import (
+    KST,
+    DEFAULT_SPECIAL_PROJECTS,
+    SAFETY_CENTER_INFO,
+    now_kst,
+    today_kst,
+    parse_krw_amount,
+    sanitize_win_name,
+    extract_req_no,
+    is_safety_center_case,
+    extract_special_project_context,
+    check_special_project_affiliation as _shared_check_special_project_affiliation,
+    build_recommended_folder_name,
+    get_accurate_total,
+    resolve_request_total_amount,
+)
+
+IS_WINDOWS = (os.name == "nt")
 
 # ---------------------------------------------------------
 # 💡 [신규] 국세청 사업자 휴폐업 조회 엔진
@@ -54,7 +78,6 @@ def check_nts_business(biz_no_str, api_key=""):
 # 1. 시스템 설정 및 환경 변수
 # ==========================================
 DEBUG = False 
-MAX_UPLOAD_FILES = 10
 MAX_FILE_SIZE_MB = 10
 AI_MODEL = "gemini-2.5-flash"
 SESSION_AI_KEY = "ai_res"
@@ -82,34 +105,6 @@ def get_template_path(filename):
         if os.path.exists(c):
             return c
     return None
-
-def sync_new_faculty_template():
-    """
-    신임교원용 원본 eformsign 템플릿(«» 메일머지 태그)이 수정되거나 추가되었을 경우,
-    python-docx-template 엔진에서 인식 가능한 {{}} 태그로 변환하여 template_new_faculty.docx를 동기화합니다.
-    """
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    korean_tpl = get_template_path("신임교원용_발주서(eformsign 템플릿)_대학_국가계약법_1천만원 미만.docx")
-    target_tpl = os.path.join(base_dir, "template_new_faculty.docx")
-    
-    if korean_tpl and os.path.exists(korean_tpl):
-        if not os.path.exists(target_tpl) or os.path.getmtime(korean_tpl) > os.path.getmtime(target_tpl):
-            try:
-                import zipfile
-                with zipfile.ZipFile(korean_tpl, 'r') as zin:
-                    with zipfile.ZipFile(target_tpl, 'w', compression=zipfile.ZIP_DEFLATED) as zout:
-                        for item in zin.infolist():
-                            data = zin.read(item.filename)
-                            if item.filename in ('word/document.xml', 'word/header1.xml', 'word/footer1.xml'):
-                                text = data.decode('utf-8')
-                                if chr(171) in text or chr(187) in text:
-                                    text = text.replace(chr(171), '{{').replace(chr(187), '}}')
-                                    data = text.encode('utf-8')
-                            zout.writestr(item, data)
-            except Exception:
-                pass
-
-sync_new_faculty_template()
 
 def get_config_path():
     p1 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app_config.json")
@@ -157,12 +152,7 @@ DEFAULT_APP_CONFIG = {
         "email": "rudwpdyd@sejong.ac.kr"
     },
     # 5. 특수 사업단 소속 교수님 매핑 규칙
-    "special_projects": {
-        "박재우": {"kw": ["지역혁신중심", "RISE", "라이즈"], "suffix": "(RISE사업단)"},
-        "김재호": {"kw": ["사물인터넷"], "suffix": "(사물인터넷혁신융합대학사업단)"},
-        "송오영": {"kw": ["SW중심대학"], "suffix": "(SW중심대학사업단)"},
-        "이기학": {"kw": ["G-LAMP", "GLAMP", "대학기초연구소"], "suffix": "(G-LAMP사업단)"}
-    }
+    "special_projects": DEFAULT_SPECIAL_PROJECTS
 }
 
 def load_app_config():
@@ -288,54 +278,16 @@ INSPECTOR_INFO = APP_CONFIG.get("inspector_info", DEFAULT_APP_CONFIG["inspector_
 BUYER_STAFF = APP_CONFIG.get("buyer_staff", DEFAULT_APP_CONFIG["buyer_staff"])
 
 # ==========================================
-# 2. 공통 유틸리티
+# 2. 공통 유틸리티 (핵심 규칙은 shared_rules.py 공유)
 # ==========================================
-KST = datetime.timezone(datetime.timedelta(hours=9))
-
-def now_kst():
-    return datetime.datetime.now(KST)
-
-def today_kst():
-    return datetime.datetime.now(KST).date()
-
-def sanitize_win_name(name_str):
-    """윈도우 폴더/파일명 금지 문자 제거 및 공백 정돈"""
-    cleaned = re.sub(r'[\\/*?:"<>|\r\n\t]', ' ', str(name_str or '')).strip()
-    return re.sub(r'\s+', ' ', cleaned)
-
-def build_recommended_folder_name(dept, pi_name, vendor_name, req_no="", date_obj=None):
-    """추천 폴더명 생성: (YYYY.MM.DD) 학과 성명 - 업체명 (구매요구번호)"""
-    dt = date_obj or now_kst()
-    d_str = dt.strftime('%Y.%m.%d')
-    c_dept = sanitize_win_name(dept)
-    c_pi = sanitize_win_name(pi_name)
-    c_ven = sanitize_win_name(vendor_name) or "업체미상"
-    c_req = sanitize_win_name(req_no)
-    if c_req in ["확인요망", "미검출", "없음"]:
-        c_req = ""
-
-    if c_dept and c_pi:
-        if c_dept == c_pi:
-            left_part = c_pi
-        else:
-            left_part = f"{c_dept} {c_pi}".strip()
-    else:
-        left_part = f"{c_dept} {c_pi}".strip()
-
-    if left_part:
-        base_folder = f"({d_str}) {left_part} - {c_ven}"
-    else:
-        base_folder = f"({d_str}) {c_ven}"
-
-    if c_req:
-        return f"{base_folder} ({c_req})"
-    return base_folder
 
 def resolve_or_create_req_folder(base_dir, req_no="", dept="", pi_name="", vendor_name="", fallback_title=""):
     """
     지정된 상위 폴더(base_dir)에서 구매요구번호(req_no)가 포함된 기존 폴더를 우선 탐색하고,
     없으면 추천 폴더명 규칙으로 새 폴더를 자동 생성한 뒤 (폴더절대경로, 신규생성여부)를 반환합니다.
     """
+    if not IS_WINDOWS:
+        raise RuntimeError("로컬 Windows 실행 환경에서만 폴더 자동 생성이 지원됩니다.")
     target_base = str(base_dir or "").strip() or os.path.join(os.path.expanduser("~"), "Desktop", "구매업무")
     os.makedirs(target_base, exist_ok=True)
 
@@ -374,6 +326,8 @@ def resolve_or_create_req_folder(base_dir, req_no="", dept="", pi_name="", vendo
 
 def open_local_folder(folder_path):
     """윈도우 탐색기에서 해당 폴더를 즉시 엽니다."""
+    if not IS_WINDOWS:
+        return False, "로컬 Windows 실행 환경에서만 폴더 열기를 지원합니다."
     if os.path.exists(folder_path):
         try:
             os.startfile(os.path.abspath(folder_path))
@@ -386,8 +340,7 @@ def log(msg):
     if DEBUG: print(f"[LOG] {msg}")
 
 def safe_int(val):
-    try: return int(re.sub(r'[^\d]', '', str(val)))
-    except: return 0
+    return parse_krw_amount(val)
 
 def safe_json_load(text):
     if not text or not str(text).strip():
@@ -571,46 +524,10 @@ def is_internal_sejong_email(email_str):
             
     return False
 
-# ==========================================
-# 💡 대학안전관리센터 특수 관리 규칙
-# ==========================================
-SAFETY_CENTER_INFO = {
-    "pi_name": "김수동 선생님",
-    "pi_dept": "대학안전관리센터",
-    "pi_phone": "02-3408-4081",
-    "pi_email": "sudong_kim@sejong.ac.kr",
-    "pi_formatted": "김수동 선생님 / 02-3408-4081 / sudong_kim@sejong.ac.kr"
-}
-
-def is_safety_center_case(*texts):
-    """과제담당자 또는 관리기관이 대학안전관리센터인 건인지 판별"""
-    combined = " ".join([str(t or "") for t in texts])
-    if not combined.strip():
-        return False
-    clean = re.sub(r'\s+', '', combined)
-    # 1. '대학안전관리센터' 키워드 직접 포함
-    if "대학안전관리센터" in clean or "대학안전관리" in clean:
-        return True
-    # 2. '과제담당자' 또는 '관리기관' 근처에 '안전관리' 또는 '김수동'이 있는 경우
-    if ("과제담당자" in clean or "관리기관" in clean) and ("안전관리" in clean or "김수동" in clean):
-        return True
-    return False
-
 def check_special_project_affiliation(pi_name, pi_dept, context_text=""):
     """특수 사업단 소속 교수님의 학과 뒤에 (사업단명)을 자동 부착합니다."""
-    if not pi_name or not pi_dept:
-        return pi_dept
-    
-    spec_map = APP_CONFIG.get("special_projects", DEFAULT_APP_CONFIG.get("special_projects", {}))
-    cfg_rule = spec_map.get(pi_name.strip())
-    if cfg_rule:
-        suffix = cfg_rule.get("suffix", "")
-        if suffix and suffix not in pi_dept:
-            kws = cfg_rule.get("kw", [])
-            clean_ctx = str(context_text).upper().replace(" ", "")
-            if any(str(kw).upper() in clean_ctx for kw in kws):
-                return f"{pi_dept}{suffix}"
-    return pi_dept
+    spec_map = APP_CONFIG.get("special_projects", DEFAULT_SPECIAL_PROJECTS)
+    return _shared_check_special_project_affiliation(pi_name, pi_dept, context_text, spec_map)
 
 def handle_error(err_type, msg, e=None):
     log_msg = f"[{err_type}] {msg}"
@@ -633,229 +550,303 @@ for _bk, _bv in BUYER_STAFF.items():
     USER_DB[_bk] = {"phone": _bv.get("phone", ""), "email": _bv.get("email", "")}
     b_first = _bk.split()[0]
     USER_DB[b_first] = {"phone": _bv.get("phone", ""), "email": _bv.get("email", "")}
-import base64 as _b64
-CACHE_FILE = "local_cache.json"
-_DEFAULT_GS_B64 = "aHR0cHM6Ly9zY3JpcHQuZ29vZ2xlLmNvbS9tYWNyb3Mvcy9BS2Z5Y2J4M3FLaU91Qzd0MEo1ZzdZSldXY2NYelFUbGQ3MjhXUlBxYmN5ZjdqQkQ5VkhGWk5ZdjBYaHFxR3VnLS1pbWdINlUvZXhlYw=="
-GSHEETS_URL = get_secret("GSHEETS_URL", ["GOOGLE_SHEETS_URL", "APPS_SCRIPT_URL"]) or _b64.b64decode(_DEFAULT_GS_B64).decode("utf-8")
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CACHE_FILE = os.path.join(_BASE_DIR, "local_cache.json")
+GSHEETS_URL = get_secret("GSHEETS_URL", ["GOOGLE_SHEETS_URL", "APPS_SCRIPT_URL"])
+
+def _sanitize_gsheets_err(err):
+    msg = str(err)
+    if GSHEETS_URL and GSHEETS_URL in msg:
+        msg = msg.replace(GSHEETS_URL, "[GSHEETS_URL]")
+    return msg
+
+def _normalize_sheet_record(row, raw_obj=None):
+    """구글 시트 행과 로컬 캐시 meta 간 키 이름 차이(띄어쓰기/숫자형 등)를 통일합니다."""
+    meta = dict(row or {})
+    raw = raw_obj if isinstance(raw_obj, dict) else {}
+    if meta.get("구매요구번호") is not None:
+        meta["구매요구번호"] = str(meta.get("구매요구번호", "")).strip()
+    vendor_mgr = meta.get("업체담당자정보") or meta.get("업체담당자 정보") or ""
+    if vendor_mgr:
+        meta["업체담당자정보"] = vendor_mgr
+        meta["업체담당자 정보"] = vendor_mgr
+    remarks_val = meta.get("비고사항") or meta.get("물품비고") or raw.get("remarks", "") or ""
+    if remarks_val:
+        meta["비고사항"] = remarks_val
+        meta["물품비고"] = remarks_val
+    return meta
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _fetch_gsheets_rows_cached(url):
+    """구글 시트 전체 행을 조회합니다. 예외 발생 시 캐싱되지 않도록 그대로 raise합니다."""
+    res = requests.get(url, timeout=25)
+    res.raise_for_status()
+    rows = res.json()
+    if not isinstance(rows, list):
+        raise ValueError(f"예상하지 못한 응답 형식: {type(rows).__name__}")
+    return rows
+
+def fetch_gsheets_rows():
+    if not GSHEETS_URL:
+        st.session_state.pop("_gsheets_last_error", None)
+        return None
+    try:
+        rows = _fetch_gsheets_rows_cached(GSHEETS_URL)
+        st.session_state.pop("_gsheets_last_error", None)
+        return rows
+    except Exception as e:
+        err_msg = _sanitize_gsheets_err(e)
+        st.session_state["_gsheets_last_error"] = err_msg
+        log(f"구글 시트 목록 조회 실패: {err_msg}")
+        return None
 
 def clear_db_caches():
     """DB 저장/삭제/수정 직후 메모리 캐시를 즉시 비워 최신 상태를 반영합니다."""
     try:
-        fetch_all_db_records.clear()
-    except Exception:
-        pass
-    try:
-        get_cache_list.clear()
+        _fetch_gsheets_rows_cached.clear()
     except Exception:
         pass
 
-def save_to_cache(req_no, meta_data, raw_data):
-    # 1. 로컬 캐시 파일 저장 (오프라인 / 빠른 로드용)
-    cache = {}
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f: cache = json.load(f)
-        except: pass
-    
-    existing_record = cache.get(req_no, {"meta": {}, "raw": {}})
-    existing_record["meta"].update(meta_data)
-    existing_record["raw"].update(raw_data)
-    cache[req_no] = existing_record
-    
+def _read_local_cache_dict():
+    if not os.path.exists(CACHE_FILE):
+        return {}
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _write_local_cache_dict(cache_dict):
     try:
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
+            json.dump(cache_dict, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log(f"로컬 캐시 저장 오류: {e}")
+
+def save_to_cache(req_no, meta_data, raw_data):
+    # 1. 로컬 캐시 파일 저장 (오프라인 / 빠른 로드용)
+    cache = _read_local_cache_dict()
+    existing_record = cache.get(req_no, {"meta": {}, "raw": {}})
+    existing_record.setdefault("meta", {}).update(meta_data)
+    existing_record.setdefault("raw", {}).update(raw_data)
+    cache[req_no] = existing_record
+    _write_local_cache_dict(cache)
 
     # 2. 구글 시트 영구 저장소 (Google Apps Script API) 연동
     if GSHEETS_URL:
         try:
             gsheet_payload = dict(meta_data)
-            # Raw_data를 직렬화하여 구글 시트의 Raw_data 열에도 영구 저장
             gsheet_payload["Raw_data"] = json.dumps(raw_data, ensure_ascii=False)
-            res = requests.post(GSHEETS_URL, json={"data": gsheet_payload}, timeout=10)
+            res = requests.post(GSHEETS_URL, json={"data": gsheet_payload}, timeout=25)
             if res.status_code == 200:
                 log(f"구글 시트 저장 성공 ({req_no})")
             else:
-                log(f"구글 시트 저장 실패 ({res.status_code}): {res.text}")
+                log(f"구글 시트 저장 실패 ({res.status_code}): {res.text[:200]}")
         except Exception as e:
-            log(f"구글 시트 API 연동 실패: {e}")
+            log(f"구글 시트 API 연동 실패: {_sanitize_gsheets_err(e)}")
 
     clear_db_caches()
 
 def delete_from_cache(req_no):
     req_no_str = str(req_no).strip()
     # 1. 로컬 캐시 삭제
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                cache = json.load(f)
-            if req_no_str in cache:
-                del cache[req_no_str]
-                with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(cache, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            log(f"로컬 캐시 삭제 오류: {e}")
+    cache = _read_local_cache_dict()
+    if req_no_str in cache:
+        del cache[req_no_str]
+        _write_local_cache_dict(cache)
 
     # 2. 구글 시트 영구 저장소 삭제 요청
     if GSHEETS_URL:
         try:
-            res = requests.post(GSHEETS_URL, json={"action": "delete", "data": {"구매요구번호": req_no_str}}, timeout=8)
+            res = requests.post(GSHEETS_URL, json={"action": "delete", "data": {"구매요구번호": req_no_str}}, timeout=15)
             if res.status_code == 200:
                 log(f"구글 시트 삭제 요청 성공 ({req_no_str})")
             else:
-                log(f"구글 시트 삭제 요청 응답 ({res.status_code}): {res.text}")
+                log(f"구글 시트 삭제 요청 응답 ({res.status_code}): {res.text[:200]}")
         except Exception as e:
-            log(f"구글 시트 삭제 API 연동 실패: {e}")
+            log(f"구글 시트 삭제 API 연동 실패: {_sanitize_gsheets_err(e)}")
 
     clear_db_caches()
 
-@st.cache_data(ttl=60, show_spinner=False)
 def get_cache_list():
     result_map = {}
-    
+
     # 1. 구글 시트 영구 저장소에서 먼저 최신 목록 조회
-    if GSHEETS_URL:
-        try:
-            res = requests.get(GSHEETS_URL, timeout=8)
-            if res.status_code == 200:
-                rows = res.json()
-                if isinstance(rows, list):
-                    for row in rows:
-                        req_no = str(row.get("구매요구번호", "")).strip()
-                        if not req_no or req_no.startswith("TEST"): 
-                            continue
-                        
-                        raw_str = row.get("Raw_data", "")
-                        raw_obj = {}
-                        if raw_str:
-                            try: raw_obj = json.loads(raw_str)
-                            except: pass
-                            
-                        vendor_mgr = row.get("업체담당자정보") or row.get("업체담당자 정보") or ""
-                        remarks_val = row.get("비고사항") or row.get("물품비고") or ""
-                        if not remarks_val and raw_obj:
-                            remarks_val = raw_obj.get("remarks", "")
-                            
-                        item_record = {
-                            "구매요구번호": req_no,
-                            "과제번호": row.get("과제번호", ""),
-                            "구매요청액": row.get("구매요청액", ""),
-                            "연구책임자정보": row.get("연구책임자정보", ""),
-                            "물품담당자": row.get("물품담당자", ""),
-                            "업체명": row.get("업체명", ""),
-                            "업체담당자정보": vendor_mgr,
-                            "비고사항": remarks_val
-                        }
-                        result_map[req_no] = (item_record, raw_obj, row)
-        except Exception as e:
-            log(f"구글 시트 목록 조회 실패 (로컬 캐시 사용): {e}")
+    rows = fetch_gsheets_rows()
+    if rows:
+        for row in rows:
+            req_no = str(row.get("구매요구번호", "")).strip()
+            if not req_no or req_no.startswith("TEST"):
+                continue
+
+            raw_str = row.get("Raw_data", "")
+            raw_obj = {}
+            if raw_str:
+                try:
+                    raw_obj = json.loads(raw_str)
+                except Exception:
+                    pass
+
+            norm_meta = _normalize_sheet_record(row, raw_obj)
+            item_record = {
+                "구매요구번호": req_no,
+                "과제번호": norm_meta.get("과제번호", ""),
+                "구매요청액": norm_meta.get("구매요청액", ""),
+                "연구책임자정보": norm_meta.get("연구책임자정보", ""),
+                "물품담당자": norm_meta.get("물품담당자", ""),
+                "업체명": norm_meta.get("업체명", ""),
+                "업체담당자정보": norm_meta.get("업체담당자정보", ""),
+                "비고사항": norm_meta.get("비고사항", ""),
+            }
+            result_map[req_no] = (item_record, raw_obj, norm_meta)
 
     # 2. 로컬 캐시 병합 (오프라인 상태이거나 미동기화 건 보완)
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                local_db = json.load(f)
-            for req_no, v in local_db.items():
-                if str(req_no).startswith("TEST"): continue
-                meta = v.get("meta", {})
-                raw = v.get("raw", {})
-                if req_no not in result_map:
-                    result_map[req_no] = ({
-                        "구매요구번호": meta.get("구매요구번호", req_no),
-                        "과제번호": meta.get("과제번호", ""),
-                        "구매요청액": meta.get("구매요청액", ""),
-                        "연구책임자정보": meta.get("연구책임자정보", ""),
-                        "물품담당자": meta.get("물품담당자", ""),
-                        "업체명": meta.get("업체명", ""),
-                        "업체담당자정보": meta.get("업체담당자정보") or meta.get("업체담당자 정보", ""),
-                        "비고사항": meta.get("비고사항") or meta.get("물품비고", "")
-                    }, raw, meta)
-                else:
-                    existing_item, existing_raw, existing_row = result_map[req_no]
-                    if not existing_raw and raw:
-                        result_map[req_no] = (existing_item, raw, existing_row)
-        except Exception as e:
-            log(f"로컬 캐시 읽기 실패: {e}")
+    local_db = _read_local_cache_dict()
+    for req_no, v in local_db.items():
+        if str(req_no).startswith("TEST"):
+            continue
+        meta = _normalize_sheet_record(v.get("meta", {}), v.get("raw", {}))
+        raw = v.get("raw", {})
+        if req_no not in result_map:
+            result_map[req_no] = ({
+                "구매요구번호": meta.get("구매요구번호", req_no),
+                "과제번호": meta.get("과제번호", ""),
+                "구매요청액": meta.get("구매요청액", ""),
+                "연구책임자정보": meta.get("연구책임자정보", ""),
+                "물품담당자": meta.get("물품담당자", ""),
+                "업체명": meta.get("업체명", ""),
+                "업체담당자정보": meta.get("업체담당자정보", ""),
+                "비고사항": meta.get("비고사항", ""),
+            }, raw, meta)
+        else:
+            existing_item, existing_raw, existing_row = result_map[req_no]
+            if not existing_raw and raw:
+                result_map[req_no] = (existing_item, raw, existing_row)
 
-    # 3. 로컬 파일에 동기화 상태 캐싱
+    # 3. 로컬 파일에 동기화 상태 캐싱 (가능한 환경에서만)
     if result_map:
-        try:
-            sync_db = {}
-            if os.path.exists(CACHE_FILE):
-                try:
-                    with open(CACHE_FILE, "r", encoding="utf-8") as f: sync_db = json.load(f)
-                except: pass
-            for req_no, (m, r, raw_meta) in result_map.items():
-                if req_no not in sync_db: sync_db[req_no] = {"meta": {}, "raw": {}}
-                sync_db[req_no]["meta"].update(raw_meta)
-                if r: sync_db[req_no]["raw"].update(r)
-            with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(sync_db, f, ensure_ascii=False, indent=2)
-        except: pass
+        sync_db = dict(local_db)
+        for req_no, (_, r, raw_meta) in result_map.items():
+            if req_no not in sync_db:
+                sync_db[req_no] = {"meta": {}, "raw": {}}
+            sync_db[req_no].setdefault("meta", {}).update(raw_meta)
+            if r:
+                sync_db[req_no].setdefault("raw", {}).update(r)
+        _write_local_cache_dict(sync_db)
 
     res_list = [item[0] for item in result_map.values()]
     return res_list[::-1]
 
-def load_from_cache(req_no):
+def load_cache_entry(req_no):
+    """구매요구번호 기준으로 (raw_data, meta_data)를 로컬 캐시 및 구글 시트에서 조회합니다."""
     req_no_str = str(req_no).strip()
-    # 1. 로컬 캐시 조회
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f: 
-                data = json.load(f).get(req_no_str, {}).get("raw", None)
-                if data: return data
-        except: pass
+    if not req_no_str:
+        return None, {}
 
-    # 2. 로컬에 없으면 구글 시트에서 직접 조회
-    if GSHEETS_URL:
-        try:
-            res = requests.get(GSHEETS_URL, timeout=8)
-            if res.status_code == 200:
-                for row in res.json():
-                    if str(row.get("구매요구번호", "")).strip() == req_no_str:
-                        raw_str = row.get("Raw_data", "")
-                        if raw_str:
-                            return json.loads(raw_str)
-        except Exception as e:
-            log(f"구글 시트 로드 실패: {e}")
+    local_db = _read_local_cache_dict()
+    local_entry = local_db.get(req_no_str, {}) if isinstance(local_db, dict) else {}
+    local_raw = local_entry.get("raw")
+    local_meta = _normalize_sheet_record(local_entry.get("meta", {}), local_raw)
 
-    return None
+    if local_raw and local_meta:
+        return local_raw, local_meta
 
-@st.cache_data(ttl=60, show_spinner=False)
+    rows = fetch_gsheets_rows()
+    if rows:
+        for row in rows:
+            if str(row.get("구매요구번호", "")).strip() == req_no_str:
+                raw_obj = local_raw
+                raw_str = row.get("Raw_data", "")
+                if not raw_obj and raw_str:
+                    try:
+                        raw_obj = json.loads(raw_str)
+                    except Exception:
+                        raw_obj = None
+                sheet_meta = _normalize_sheet_record(row, raw_obj)
+                if local_meta:
+                    merged_meta = dict(sheet_meta)
+                    merged_meta.update({k: v for k, v in local_meta.items() if v})
+                    sheet_meta = merged_meta
+                return raw_obj, sheet_meta
+
+    return local_raw or None, local_meta
+
+def load_from_cache(req_no):
+    raw_obj, _ = load_cache_entry(req_no)
+    return raw_obj
+
 def fetch_all_db_records():
     records = []
     # 1. 구글 시트 영구 저장소 조회
-    if GSHEETS_URL:
-        try:
-            res = requests.get(GSHEETS_URL, timeout=6)
-            if res.status_code == 200:
-                rows = res.json()
-                if isinstance(rows, list):
-                    for r in rows:
-                        req_no = str(r.get("구매요구번호", "")).strip()
-                        if req_no and not req_no.startswith("TEST"):
-                            records.append(r)
-        except Exception as e:
-            log(f"구글 시트 레코드 조회 실패: {e}")
-            
+    rows = fetch_gsheets_rows()
+    if rows:
+        for r in rows:
+            req_no = str(r.get("구매요구번호", "")).strip()
+            if req_no and not req_no.startswith("TEST"):
+                records.append(r)
+
     # 2. 로컬 캐시 파일 조회 및 보완
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                local_data = json.load(f)
-            existing_reqs = {str(r.get("구매요구번호", "")).strip() for r in records}
-            for req_no, v in local_data.items():
-                req_no_str = str(req_no).strip()
-                if req_no_str not in existing_reqs and not req_no_str.startswith("TEST"):
-                    meta = v.get("meta", {})
-                    meta["구매요구번호"] = req_no_str
-                    records.append(meta)
-        except Exception as e:
-            log(f"로컬 캐시 레코드 조회 실패: {e}")
-            
+    local_data = _read_local_cache_dict()
+    existing_reqs = {str(r.get("구매요구번호", "")).strip() for r in records}
+    for req_no, v in local_data.items():
+        req_no_str = str(req_no).strip()
+        if req_no_str not in existing_reqs and not req_no_str.startswith("TEST"):
+            meta = dict(v.get("meta", {}))
+            meta["구매요구번호"] = req_no_str
+            records.append(meta)
+
     return records
+
+def _normalize_req_no(val):
+    """시트 숫자형(예: '202611170002.0')이나 공백을 포함한 구매요구번호 문자열을 정규화합니다."""
+    s = str(val or "").strip()
+    return re.sub(r'\.0+$', '', s)
+
+_LEGAL_ENTITY_TOKENS = {'주', '유', '사', '자', '재', '합', '복', '합자', '합명', '주식회사', '유한회사', '사단법인', '재단법인', '유한책임회사'}
+
+def _vendor_name_variants(name_str):
+    """'JSC(제이에스씨)' 같은 한/영 병기 상호에서 괄호 안팎 표기를 모두 비교 후보로 추출합니다."""
+    raw = str(name_str or "").strip()
+    if not raw:
+        return set()
+    variants = set()
+    base = clean_name(raw)
+    if len(base) >= 2:
+        variants.add(base)
+    for inner in re.findall(r'[\(\[]([^\)\]]+)[\)\]]', raw):
+        inner_clean = clean_name(inner)
+        if len(inner_clean) >= 2 and inner_clean not in _LEGAL_ENTITY_TOKENS:
+            variants.add(inner_clean)
+    merged_src = re.sub(r'\(\s*[주유사자재합]\s*\)|㈜|㈲', '', raw)
+    merged = re.sub(r'[^\w가-힣]', '', merged_src).lower()
+    for kw in ('주식회사', '유한회사', '합자회사', '합명회사', '사단법인', '재단법인', '유한책임회사'):
+        merged = merged.replace(kw, '')
+    if len(merged) >= 2:
+        variants.add(merged)
+    return variants
+
+def _parse_record_kst_date(val):
+    """ISO UTC('...Z') 또는 'YYYY-MM-DD' / 'YYYY. M. D' 형식을 KST date로 안전 변환합니다."""
+    s = str(val or "").strip()
+    if not s:
+        return None
+    if re.search(r'(?:Z|[+-]\d{2}:?\d{2})$', s):
+        try:
+            iso_s = re.sub(r'Z$', '+00:00', s)
+            dt = datetime.datetime.fromisoformat(iso_s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            return dt.astimezone(KST).date()
+        except Exception:
+            pass
+    m_date = re.search(r'(\d{4})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})', s)
+    if not m_date:
+        return None
+    try:
+        return datetime.date(int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3)))
+    except Exception:
+        return None
 
 def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_req_no, current_amt):
     """
@@ -866,10 +857,10 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
         
     clean_curr_pno = re.sub(r'[\s\-_]', '', str(project_no)).upper()
     clean_curr_biz = re.sub(r'[^\d]', '', str(vendor_biz or ''))
-    clean_curr_ven = clean_name(str(vendor_name or ''))
-    curr_req_str = str(current_req_no or '').strip()
+    curr_ven_variants = _vendor_name_variants(vendor_name)
+    curr_req_str = _normalize_req_no(current_req_no)
     
-    if not clean_curr_biz and not clean_curr_ven:
+    if not clean_curr_biz and not curr_ven_variants:
         return [], 0, []
         
     records = fetch_all_db_records()
@@ -878,7 +869,7 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
     seen_reqs = set()
     
     for r in records:
-        r_req = str(r.get("구매요구번호", "")).strip()
+        r_req = _normalize_req_no(r.get("구매요구번호", ""))
         if not r_req or r_req.startswith("TEST"):
             continue
         if curr_req_str and r_req == curr_req_str:
@@ -892,36 +883,30 @@ def check_split_procurement_risk(project_no, vendor_name, vendor_biz, current_re
             continue
             
         r_biz = re.sub(r'[^\d]', '', str(r.get("사업자번호", "")))
-        r_ven = clean_name(str(r.get("업체명", "")))
+        r_ven_variants = _vendor_name_variants(r.get("업체명", ""))
         
         is_same_vendor = False
         if clean_curr_biz and len(clean_curr_biz) >= 10 and r_biz and len(r_biz) >= 10:
             if clean_curr_biz == r_biz:
                 is_same_vendor = True
-        if not is_same_vendor and clean_curr_ven and r_ven and len(clean_curr_ven) >= 2 and len(r_ven) >= 2:
-            if clean_curr_ven == r_ven or clean_curr_ven in r_ven or r_ven in clean_curr_ven:
+        if not is_same_vendor and curr_ven_variants and r_ven_variants:
+            if curr_ven_variants & r_ven_variants:
                 is_same_vendor = True
             
         if not is_same_vendor:
             continue
             
-        # DB 등록일 기준 1개월(31일) 이내 여부 체크
-        d_str = str(r.get("요청분석일자", ""))
-        m_date = re.search(r'(\d{4})[-./](\d{2})[-./](\d{2})', d_str)
-        if not m_date:
-            continue
-        try:
-            r_date = datetime.date(int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3)))
-        except:
+        # DB 등록일(KST) 기준 1개월(31일) 이내 여부 체크
+        r_date = _parse_record_kst_date(r.get("요청분석일자", ""))
+        if not r_date:
             continue
             
         diff_days = (today - r_date).days
         if -2 <= diff_days <= 31:
-            raw_nums = re.sub(r'[^\d]', '', str(r.get("구매요청액", "")))
-            amt_num = int(raw_nums) if raw_nums else 0
+            amt_num = safe_int(r.get("구매요청액", ""))
             matching_records.append({
                 "req_no": r_req,
-                "date": f"{m_date.group(1)}-{m_date.group(2)}-{m_date.group(3)}",
+                "date": r_date.strftime("%Y-%m-%d"),
                 "amt": amt_num,
                 "ven": r.get("업체명", "")
             })
@@ -954,8 +939,8 @@ def extract_base_info(text, extra_text=""):
     p_no_match = re.search(r'(\d{4}-\d{4}-\d{2})', text)
     if p_no_match: info['p_no'] = p_no_match.group(1)
     
-    req_no_match = re.search(r'구매요구번호[^\d]*(\d{12})', text)
-    if req_no_match: info['req_no'] = req_no_match.group(1)
+    parsed_req_no = extract_req_no(text)
+    if parsed_req_no: info['req_no'] = parsed_req_no
     
     prj_match = re.search(r'연차연구기간\s*(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})', text)
     if prj_match: info['prj_end'] = prj_match.group(2)
@@ -970,9 +955,7 @@ def extract_base_info(text, extra_text=""):
             info['pi_phone'] = format_phone(parts[-2])
             info['pi_formatted'] = f"{parts[0]} / {info['pi_phone']} / {parts[-1]}"
             
-            clean_text = text.replace(" ", "")
-            prj_context_match = re.search(r'과제성격(.*?)(연구책임자정보|연차연구기간)', clean_text, flags=re.DOTALL)
-            prj_context = prj_context_match.group(1) if prj_context_match else clean_text
+            prj_context = extract_special_project_context(text)
             info['pi_dept'] = check_special_project_affiliation(info['pi_name'], info['pi_dept'], prj_context)
         else:
             info['pi_formatted'] = pi_match.group(1).strip()
@@ -986,26 +969,6 @@ def extract_base_info(text, extra_text=""):
         info['pi_formatted'] = SAFETY_CENTER_INFO['pi_formatted']
             
     return info
-
-def get_accurate_total(text, keyword=""):
-    search_area = text.split(keyword)[-1] if keyword else text
-    search_area = re.sub(r'\b\d+(?:-\d+)+\b', '', search_area)
-    search_area = re.sub(r'\b\d[\d,]*\s*(mm|cm|m|kg|g|mg|ml|l|v|hz|w|ea|u|%)\b', '', search_area, flags=re.IGNORECASE)
-    search_area = re.sub(r'\b[a-zA-Z]+\d+|\d+[a-zA-Z]+\b', '', search_area)
-    all_numbers = re.findall(r'\b\d[\d,]*\b', search_area)
-    
-    clean_numbers = []
-    for n in all_numbers:
-        num_str = n.replace(',', '')
-        val = safe_int(num_str)
-        if num_str.startswith('0') and len(num_str) > 1: continue
-        if len(num_str) >= 11: continue 
-        if len(num_str) == 8 and (num_str.startswith('19') or num_str.startswith('20')):
-            month = safe_int(num_str[4:6])
-            day = safe_int(num_str[6:8])
-            if 1 <= month <= 12 and 1 <= day <= 31: continue
-        if val >= 1000 or val == 0: clean_numbers.append(val)
-    return max(clean_numbers) if clean_numbers else 0
 
 def check_bipum_qualify(name, unit_price, erp_cat=""):
     clean_name = name.replace(" ", "").lower()
@@ -1247,7 +1210,7 @@ def parse_service_erp(text, force_category):
             continue
     return items, valid_format
 
-def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_text="", raw_req_text="", ai_res=None, project_no="", vendor_name="", vendor_bizno="", current_req_no=""): 
+def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_text="", raw_req_text="", ai_res=None, project_no="", vendor_name="", vendor_bizno="", current_req_no="", vendor_phone_override=None, vendor_email_override=None): 
     rules_triggered = []
     
     # 1. 간접비건 확인 (재원내역 또는 요청서 텍스트)
@@ -1310,12 +1273,17 @@ def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_tex
         else:
             final_category = "소모품"
 
-    # 4. 업체담당자 정보 확인
-    if ai_res:
-        ai_eml = ai_res.get('이메일', '')
-        ai_phn = ai_res.get('연락처', '')
-        is_bad_eml = not ai_eml or ai_eml in ["미검출", "없음"] or is_internal_sejong_email(ai_eml)
-        is_bad_phn = not ai_phn or ai_phn in ["미검출", "없음"]
+    # 4. 업체담당자 정보 확인 (STEP 2 UI 입력창 실시간 수정값 우선 반영)
+    eff_phn = str(vendor_phone_override).strip() if vendor_phone_override is not None else str((ai_res or {}).get('연락처', '') or '').strip()
+    eff_eml = str(vendor_email_override).strip() if vendor_email_override is not None else str((ai_res or {}).get('이메일', '') or '').strip()
+    has_ai_context = bool(ai_res)
+    has_manual_contact = (
+        (bool(eff_phn) and eff_phn not in ["미검출", "없음"])
+        or (bool(eff_eml) and eff_eml not in ["미검출", "없음"])
+    )
+    if has_ai_context or has_manual_contact:
+        is_bad_eml = not eff_eml or eff_eml in ["미검출", "없음"] or is_internal_sejong_email(eff_eml)
+        is_bad_phn = not eff_phn or eff_phn in ["미검출", "없음"]
         if is_bad_eml or is_bad_phn:
             rules_triggered.append("업체담당자 정보 확인필요")
 
@@ -1398,6 +1366,24 @@ def run_ai_analysis(files, req_type):
 """
     ]
 
+    for f in files:
+        f_size = getattr(f, "size", None)
+        if f_size is None and hasattr(f, "getvalue"):
+            f_size = len(f.getvalue())
+        if f_size is not None:
+            size_mb = f_size / (1024 * 1024)
+            if size_mb > MAX_FILE_SIZE_MB:
+                fname = getattr(f, "name", "첨부파일")
+                log(f"🚨 파일 용량 초과 차단: {fname} ({size_mb:.2f}MB > {MAX_FILE_SIZE_MB}MB)")
+                return None, [{
+                    "model": "사전검증",
+                    "attempt": 1,
+                    "type": "PAYLOAD_TOO_LARGE",
+                    "summary": f"📦 파일 용량 초과: '{fname}' ({size_mb:.1f}MB) 파일이 제한 용량({MAX_FILE_SIZE_MB}MB)을 초과했습니다.",
+                    "error": f"file '{fname}' size {size_mb:.2f}MB exceeds MAX_FILE_SIZE_MB={MAX_FILE_SIZE_MB}MB",
+                    "response_text": ""
+                }]
+
     for idx, f in enumerate(files, 1):
         if "excel" in f.type or "spreadsheet" in f.type:
             try: contents.append(f"문서 {idx} (엑셀 파일명: {f.name}):\n{pd.read_excel(f).to_csv(index=False)}")
@@ -1444,8 +1430,7 @@ def run_ai_analysis(files, req_type):
                         "error": f"finish_reason: {finish_reason}, 에러: {str(text_e)}",
                         "response_text": ""
                     })
-                    time.sleep(1)
-                    continue
+                    break
 
                 if resp_text.strip():
                     parsed = safe_json_load(resp_text.strip())
@@ -1503,7 +1488,10 @@ def run_ai_analysis(files, req_type):
                     "error": err_str,
                     "response_text": ""
                 })
-                time.sleep(1)
+                if err_type in ("AUTH_ERROR", "MODEL_NOT_FOUND", "PAYLOAD_TOO_LARGE", "SAFETY_BLOCKED"):
+                    break
+                if attempt + 1 < max_retries:
+                    time.sleep(1)
 
     log("🚨 모든 Fallback 모델 호출 실패. 수동 입력 모드로 전환합니다.")
     return None, failure_history
@@ -2267,7 +2255,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
             if "file_key" not in st.session_state: st.session_state["file_key"] = 0
             
             up_files = st.file_uploader(
-                f"최대 {MAX_UPLOAD_FILES}개 / {MAX_FILE_SIZE_MB}MB", 
+                f"파일당 최대 {MAX_FILE_SIZE_MB}MB", 
                 accept_multiple_files=True, 
                 label_visibility="collapsed", 
                 key=f"file_input_{st.session_state['file_key']}"
@@ -2343,11 +2331,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         saved_ai["계좌번호"] = v_acc
         st.session_state[SESSION_AI_KEY] = saved_ai
 
-        t_amt = get_accurate_total(cur_req, "합계액")
-        if t_amt == 0:
-            t_amt = get_accurate_total(cur_fin, "총액")
-        if t_amt == 0 and items:
-            t_amt = sum(itm.get('price', 0) for itm in items)
+        t_amt = resolve_request_total_amount(cur_req, cur_fin, items)
 
         raw_to_save = {
             "req_input": cur_req, "fin_input": cur_fin, "itm_input": cur_itm, "ai_res": saved_ai, 
@@ -2439,13 +2423,35 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         v_holder = rt.get("통장사본_예금주") or rt.get("예금주", "")
         v_acc = rt.get("통장사본_계좌번호") or rt.get("계좌번호", "")
         
-        if v_ven: st.session_state["req_in_ven"] = v_ven
-        if v_biz: st.session_state["req_in_biz"] = v_biz
-        if v_rep: st.session_state["req_in_rep"] = v_rep
-        if v_phn and v_phn != "미검출": st.session_state["req_in_phn"] = v_phn
-        if v_eml and v_eml != "미검출" and not is_internal_sejong_email(v_eml): st.session_state["req_in_eml"] = v_eml
-        if v_holder: st.session_state["req_acc_holder"] = v_holder
-        if v_acc: st.session_state["req_acc_num"] = v_acc
+        if v_phn and v_phn != "미검출":
+            v_ph_clean = re.sub(r'[^\d]', '', str(v_phn))
+            b_tmp = extract_base_info(raw_req, raw_fin) if raw_req else {}
+            int_phones = [re.sub(r'[^\d]', '', b_tmp.get('pi_formatted', ''))]
+            tmp_items = []
+            if raw_itm:
+                if req_type == "📦 물품":
+                    tmp_items, _ = parse_goods_erp(raw_itm)
+                elif req_type == "🛠️ 용역":
+                    tmp_items, _ = parse_service_erp(raw_itm, force_category="용역")
+                elif req_type == "🏗️ 공사":
+                    tmp_items, _ = parse_service_erp(raw_itm, force_category="공사, 용역")
+            for itm in tmp_items:
+                int_phones.append(re.sub(r'[^\d]', '', itm.get('contact', '')))
+            if any(ip in v_ph_clean or v_ph_clean in ip for ip in int_phones if len(ip) >= 9):
+                v_phn = ""
+        else:
+            v_phn = ""
+
+        if not v_eml or v_eml == "미검출" or is_internal_sejong_email(v_eml):
+            v_eml = ""
+
+        st.session_state["req_in_ven"] = v_ven or ""
+        st.session_state["req_in_biz"] = v_biz or ""
+        st.session_state["req_in_rep"] = v_rep or ""
+        st.session_state["req_in_phn"] = v_phn
+        st.session_state["req_in_eml"] = v_eml
+        st.session_state["req_acc_holder"] = v_holder or ""
+        st.session_state["req_acc_num"] = v_acc or ""
 
     if start_all:
         if not raw_req:
@@ -2454,6 +2460,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
 
         st.session_state[SESSION_REQ_KEY] = True
         st.session_state['is_saved'] = False
+        clear_db_caches()
             
         if up_files:
             with st.spinner(f"🤖 AI가 '{req_type}' 기준에 맞춰 서류를 검증 중입니다..."):
@@ -2629,7 +2636,6 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
             st.stop() 
         
         base_data = extract_base_info(raw_req, raw_fin)
-        total_amt = get_accurate_total(raw_req, "합계액")
         
         if req_type == "📦 물품":
             item_list, is_valid = parse_goods_erp(raw_itm)
@@ -2641,6 +2647,8 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         if not is_valid and raw_itm.strip():
             handle_error("ERP", "물품/용역내역 행 텍스트가 정상적인 ERP 양식이 아닙니다. 표 전체를 정확히 드래그했는지 확인해주세요.")
             st.stop()
+
+        total_amt = resolve_request_total_amount(raw_req, raw_fin, item_list)
         
         st.success(f"✅ 텍스트 분석 완료 | 금액: {total_amt:,}원 | 품목: {len(item_list)}건 | 분류: {req_type}")
 
@@ -3005,6 +3013,10 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
 
         # 동일과제/동일업체 1개월 내 구매요청 이력 검사 및 UI 배너 렌더링
         dup_warns, dup_total, dup_matches = check_split_procurement_risk(curr_p_no, curr_ven, curr_biz, curr_req_no, total_amt)
+        if not GSHEETS_URL:
+            st.warning("⚠️ `GSHEETS_URL` 미설정 상태라 로컬 캐시 기준으로만 동일과제·업체 누적 금액을 검증합니다.")
+        elif st.session_state.get("_gsheets_last_error"):
+            st.warning(f"⚠️ 구글 시트 DB 조회 실패로 입찰금액 초과(누적) 검증이 누락되었을 수 있습니다: {st.session_state['_gsheets_last_error']}")
         if dup_matches:
             with st.container(border=True):
                 if dup_total > 22000000:
@@ -3024,19 +3036,6 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                         f"📌 결재의견 '2. 확인사항'에 사전 확인 문구가 자동으로 반영되었습니다."
                     )
 
-        st.divider()
-        st.write("#### ✍️ 결재 의견 (자동 생성)")
-        st.code(generate_opinion(req_type, con_type, total_amt, item_list, raw_fin, raw_req, ai_res=ai, project_no=curr_p_no, vendor_name=curr_ven, vendor_bizno=curr_biz, current_req_no=curr_req_no), language="text")
-        
-        st.divider()
-        
-        # 💡 [코드 단축] 데스크탑의 탐색기 기능이 불필요하여 깔끔하게 폴더 이름 텍스트 복사 뷰어만 남김
-        st.write("#### 📁 업체 정보 통합 및 추천 폴더명")
-        
-        c_e1, c_e2 = st.columns(2)
-        with c_e1: t_dept = st.text_input("학과명", value=base_data['pi_dept'])
-        with c_e2: t_name = st.text_input("성명", value=base_data['pi_name'])
-        
         ai_phone = ai.get('연락처', '') if ai else ''
         if ai_phone and ai_phone != "미검출":
             ai_ph_clean = re.sub(r'[^\d]', '', ai_phone)
@@ -3049,6 +3048,39 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         ai_email = ai.get('이메일', '') if ai else ''
         if ai_email and (ai_email == "미검출" or is_internal_sejong_email(ai_email)):
             ai_email = ""
+
+        eff_v_phn = st.session_state["req_in_phn"] if "req_in_phn" in st.session_state else ai_phone
+        eff_v_eml = st.session_state["req_in_eml"] if "req_in_eml" in st.session_state else ai_email
+
+        st.divider()
+        st.write("#### ✍️ 결재 의견 (자동 생성)")
+        st.code(
+            generate_opinion(
+                req_type,
+                con_type,
+                total_amt,
+                item_list,
+                raw_fin,
+                raw_req,
+                ai_res=ai,
+                project_no=curr_p_no,
+                vendor_name=curr_ven,
+                vendor_bizno=curr_biz,
+                current_req_no=curr_req_no,
+                vendor_phone_override=eff_v_phn,
+                vendor_email_override=eff_v_eml,
+            ),
+            language="text",
+        )
+        
+        st.divider()
+        
+        # 💡 [코드 단축] 데스크탑의 탐색기 기능이 불필요하여 깔끔하게 폴더 이름 텍스트 복사 뷰어만 남김
+        st.write("#### 📁 업체 정보 통합 및 추천 폴더명")
+        
+        c_e1, c_e2 = st.columns(2)
+        with c_e1: t_dept = st.text_input("학과명", value=base_data['pi_dept'])
+        with c_e2: t_name = st.text_input("성명", value=base_data['pi_name'])
 
         def_ven = st.session_state.get("req_in_ven") or (ai.get('사업자등록증_상호명') or ai.get('업체명', '') if ai else '')
         def_biz = st.session_state.get("req_in_biz") or (ai.get('사업자등록증_등록번호') or ai.get('사업자번호', '') if ai else '')
@@ -3069,45 +3101,49 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
         
         fold_nm = build_recommended_folder_name(t_dept, t_name, t_ven, base_data.get('req_no', ''))
         
-        st.info("💡 오른쪽 아이콘을 눌러 폴더 이름을 복사하거나, 아래 버튼으로 지정 상위 폴더 하위에 즉시 생성하세요.")
-        st.code(fold_nm, language="text")
+        if IS_WINDOWS:
+            st.info("💡 오른쪽 아이콘을 눌러 폴더 이름을 복사하거나, 아래 버튼으로 지정 상위 폴더 하위에 즉시 생성하세요.")
+            st.code(fold_nm, language="text")
 
-        cur_base_dir = APP_CONFIG.get("work_base_dir") or os.path.join(os.path.expanduser("~"), "Desktop", "구매업무")
-        c_fd1, c_fd2, c_fd3 = st.columns([2.5, 1.3, 1.0])
-        with c_fd1:
-            in_base_dir = st.text_input("📂 고정 상위 폴더 경로", value=cur_base_dir, key="ext_work_base_dir", label_visibility="collapsed", placeholder="예: C:\\Users\\사용자\\Desktop\\구매업무")
-        with c_fd2:
-            if st.button("📁 상위 폴더에 새 폴더 즉시 생성", key="btn_mk_req_folder", width="stretch"):
-                try:
-                    if in_base_dir.strip() and in_base_dir.strip() != cur_base_dir:
-                        APP_CONFIG["work_base_dir"] = in_base_dir.strip()
-                        save_app_config(APP_CONFIG)
-                    target_f_dir = os.path.join(in_base_dir.strip() or cur_base_dir, fold_nm)
-                    os.makedirs(target_f_dir, exist_ok=True)
-                    saved_cnt = 0
-                    if up_files:
-                        for uf in up_files:
-                            uf_name = sanitize_win_name(uf.name)
-                            if uf_name:
-                                with open(os.path.join(target_f_dir, uf_name), "wb") as f_out:
-                                    f_out.write(uf.getvalue())
-                                saved_cnt += 1
-                    st.session_state["last_created_req_folder"] = target_f_dir
-                    msg_extra = f" (첨부파일 {saved_cnt}건 함께 저장됨)" if saved_cnt > 0 else ""
-                    st.toast(f"✅ 폴더 생성 완료!{msg_extra}")
-                except Exception as e_fd:
-                    st.error(f"🚨 폴더 생성 실패: {e_fd}")
-        with c_fd3:
-            if st.button("🗂️ 폴더 열기", key="btn_open_req_folder", width="stretch"):
-                target_open = st.session_state.get("last_created_req_folder") or os.path.join(in_base_dir.strip() or cur_base_dir, fold_nm)
-                if not os.path.exists(target_open):
-                    target_open = in_base_dir.strip() or cur_base_dir
-                    os.makedirs(target_open, exist_ok=True)
-                ok_op, err_op = open_local_folder(target_open)
-                if not ok_op:
-                    st.warning(f"폴더 열기 불가 (로컬 환경에서만 지원): {err_op}")
-        if st.session_state.get("last_created_req_folder"):
-            st.caption(f"📍 생성된 경로: `{st.session_state['last_created_req_folder']}`")
+            cur_base_dir = APP_CONFIG.get("work_base_dir") or os.path.join(os.path.expanduser("~"), "Desktop", "구매업무")
+            c_fd1, c_fd2, c_fd3 = st.columns([2.5, 1.3, 1.0])
+            with c_fd1:
+                in_base_dir = st.text_input("📂 고정 상위 폴더 경로", value=cur_base_dir, key="ext_work_base_dir", label_visibility="collapsed", placeholder="예: C:\\Users\\사용자\\Desktop\\구매업무")
+            with c_fd2:
+                if st.button("📁 상위 폴더에 새 폴더 즉시 생성", key="btn_mk_req_folder", width="stretch"):
+                    try:
+                        if in_base_dir.strip() and in_base_dir.strip() != cur_base_dir:
+                            APP_CONFIG["work_base_dir"] = in_base_dir.strip()
+                            save_app_config(APP_CONFIG)
+                        target_f_dir = os.path.join(in_base_dir.strip() or cur_base_dir, fold_nm)
+                        os.makedirs(target_f_dir, exist_ok=True)
+                        saved_cnt = 0
+                        if up_files:
+                            for uf in up_files:
+                                uf_name = sanitize_win_name(uf.name)
+                                if uf_name:
+                                    with open(os.path.join(target_f_dir, uf_name), "wb") as f_out:
+                                        f_out.write(uf.getvalue())
+                                    saved_cnt += 1
+                        st.session_state["last_created_req_folder"] = target_f_dir
+                        msg_extra = f" (첨부파일 {saved_cnt}건 함께 저장됨)" if saved_cnt > 0 else ""
+                        st.toast(f"✅ 폴더 생성 완료!{msg_extra}")
+                    except Exception as e_fd:
+                        st.error(f"🚨 폴더 생성 실패: {e_fd}")
+            with c_fd3:
+                if st.button("🗂️ 폴더 열기", key="btn_open_req_folder", width="stretch"):
+                    target_open = st.session_state.get("last_created_req_folder") or os.path.join(in_base_dir.strip() or cur_base_dir, fold_nm)
+                    if not os.path.exists(target_open):
+                        target_open = in_base_dir.strip() or cur_base_dir
+                        os.makedirs(target_open, exist_ok=True)
+                    ok_op, err_op = open_local_folder(target_open)
+                    if not ok_op:
+                        st.warning(f"폴더 열기 불가 (로컬 환경에서만 지원): {err_op}")
+            if st.session_state.get("last_created_req_folder"):
+                st.caption(f"📍 생성된 경로: `{st.session_state['last_created_req_folder']}`")
+        else:
+            st.info("💡 오른쪽 복사 아이콘을 눌러 추천 폴더명을 복사하세요. (로컬 폴더 생성/열기는 Windows 로컬 실행 환경에서 지원됩니다.)")
+            st.code(fold_nm, language="text")
 
         st.divider()
         bank_t = get_ui_text("ext_bank_title", "🏦 통장사본 계좌정보")
@@ -3228,17 +3264,7 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                 # 💡 [Part 2 - 제안 1] 구매요구번호 기준 캐시(DB) 자동 조회 및 프리필
                 # -------------------------------------------------------------
                 req_no = str(cd.get('req_no', '')).strip()
-                cached_data = load_from_cache(req_no) if req_no else None
-                
-                cached_meta = {}
-                if req_no and os.path.exists(CACHE_FILE):
-                    try:
-                        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                            local_db = json.load(f)
-                            if req_no in local_db:
-                                cached_meta = local_db[req_no].get("meta", {})
-                    except Exception:
-                        pass
+                cached_data, cached_meta = load_cache_entry(req_no) if req_no else (None, {})
 
                 if cached_data or cached_meta:
                     cd['from_cache'] = True
@@ -3394,21 +3420,22 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
         st.write(f"### 📝 2. 발주요청서 입력 폼 (총 {len(st.session_state['multi_con_data'])}건 추출됨)")
         
         cur_con_base_dir = APP_CONFIG.get("work_base_dir") or os.path.join(os.path.expanduser("~"), "Desktop", "구매업무")
-        with st.container(border=True):
-            c_cb1, c_cb2 = st.columns([3.5, 1.2])
-            with c_cb1:
-                con_base_dir_in = st.text_input(
-                    "📂 발주서 자동 분류/저장 상위 폴더 경로 (하위에 구매요구번호 폴더를 자동 탐색하거나 새로 생성하여 저장합니다)",
-                    value=cur_con_base_dir,
-                    key="con_work_base_dir"
-                )
-            with c_cb2:
-                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                if st.button("💾 기본 경로로 저장", key="btn_save_con_base_dir", width="stretch"):
-                    if con_base_dir_in.strip():
-                        APP_CONFIG["work_base_dir"] = con_base_dir_in.strip()
-                        save_app_config(APP_CONFIG)
-                        st.toast("✅ 기본 작업 상위 폴더 경로가 저장되었습니다!")
+        if IS_WINDOWS:
+            with st.container(border=True):
+                c_cb1, c_cb2 = st.columns([3.5, 1.2])
+                with c_cb1:
+                    con_base_dir_in = st.text_input(
+                        "📂 발주서 자동 분류/저장 상위 폴더 경로 (하위에 구매요구번호 폴더를 자동 탐색하거나 새로 생성하여 저장합니다)",
+                        value=cur_con_base_dir,
+                        key="con_work_base_dir"
+                    )
+                with c_cb2:
+                    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                    if st.button("💾 기본 경로로 저장", key="btn_save_con_base_dir", width="stretch"):
+                        if con_base_dir_in.strip():
+                            APP_CONFIG["work_base_dir"] = con_base_dir_in.strip()
+                            save_app_config(APP_CONFIG)
+                            st.toast("✅ 기본 작업 상위 폴더 경로가 저장되었습니다!")
         
         for i, cd in enumerate(st.session_state['multi_con_data']):
             with st.expander(f"📌 [계약 {i+1}] {cd.get('con_name', '건명 미상')}", expanded=True):
@@ -3545,7 +3572,7 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                     else:
                         try:
                             is_new_fac = "신임교원" in sel_ptype
-                            new_fac_tpl = get_template_path(["template_new_faculty.docx", "신임교원용_발주서(eformsign 템플릿)_대학_국가계약법_1천만원 미만.docx"])
+                            new_fac_tpl = get_template_path("template_new_faculty.docx")
 
                             if is_new_fac and new_fac_tpl:
                                 tpl_name = new_fac_tpl
@@ -3558,7 +3585,6 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                             doc = DocxTemplate(tpl_name)
                             
                             final_deposit_str = f"{calc_deposit:,}" if calc_deposit > 0 else ""
-                            clean_user_for_doc = re.sub(r'\s*교수\s*$', '', u_nm).strip() if is_new_fac else u_nm
                             context = {
                                 "구매담당자": b_nm, 
                                 "구매담당자_연락처": b_ph, 
@@ -3567,7 +3593,7 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                                 "계약금액": f"{amt_val:,}", 
                                 "납품방법": e_deliv, 
                                 "납품장소": e_loc,
-                                "실사용자": clean_user_for_doc, 
+                                "실사용자": u_nm, 
                                 "실사용자_연락처": u_ph, 
                                 "실사용자_메일": u_em,
                                 "협력사": e_ven,
@@ -3590,29 +3616,29 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                                 target_fname = f"발주서 - { sanitize_win_name(e_name) }{test_suffix}.docx" if e_name else f"발주서_{ sanitize_win_name(e_ven) }{test_suffix}.docx"
 
                             docx_bytes = ts.getvalue()
-                            active_base_dir = st.session_state.get("con_work_base_dir", cur_con_base_dir).strip() or cur_con_base_dir
-                            if active_base_dir != APP_CONFIG.get("work_base_dir"):
-                                APP_CONFIG["work_base_dir"] = active_base_dir
-                                save_app_config(APP_CONFIG)
-
                             saved_folder_path = ""
                             saved_file_path = ""
                             is_new_folder = False
                             folder_err = ""
-                            try:
-                                saved_folder_path, is_new_folder = resolve_or_create_req_folder(
-                                    base_dir=active_base_dir,
-                                    req_no=clean_req,
-                                    dept=cd.get('pi_dept', ''),
-                                    pi_name=cd.get('pi_name', ''),
-                                    vendor_name=e_ven,
-                                    fallback_title=e_name
-                                )
-                                saved_file_path = os.path.join(saved_folder_path, target_fname)
-                                with open(saved_file_path, "wb") as f_target:
-                                    f_target.write(docx_bytes)
-                            except Exception as fe:
-                                folder_err = str(fe)
+                            if IS_WINDOWS:
+                                active_base_dir = st.session_state.get("con_work_base_dir", cur_con_base_dir).strip() or cur_con_base_dir
+                                if active_base_dir != APP_CONFIG.get("work_base_dir"):
+                                    APP_CONFIG["work_base_dir"] = active_base_dir
+                                    save_app_config(APP_CONFIG)
+                                try:
+                                    saved_folder_path, is_new_folder = resolve_or_create_req_folder(
+                                        base_dir=active_base_dir,
+                                        req_no=clean_req,
+                                        dept=cd.get('pi_dept', ''),
+                                        pi_name=cd.get('pi_name', ''),
+                                        vendor_name=e_ven,
+                                        fallback_title=e_name
+                                    )
+                                    saved_file_path = os.path.join(saved_folder_path, target_fname)
+                                    with open(saved_file_path, "wb") as f_target:
+                                        f_target.write(docx_bytes)
+                                except Exception as fe:
+                                    folder_err = str(fe)
 
                             st.session_state[f"last_gen_docx_{i}"] = {
                                 "bytes": docx_bytes,
@@ -3622,50 +3648,64 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
                                 "is_new_folder": is_new_folder,
                                 "folder_err": folder_err
                             }
-                            st.success(f"✅ {i+1}번 발주서 생성 및 폴더 자동 배치 완료! (`{target_fname}`)")
+                            if IS_WINDOWS:
+                                st.success(f"✅ {i+1}번 발주서 생성 및 폴더 자동 배치 완료! (`{target_fname}`)")
+                            else:
+                                st.success(f"✅ {i+1}번 발주서 생성 완료! 아래 버튼에서 다운로드하세요. (`{target_fname}`)")
                         except Exception as e:
                             st.error(f"🚨 워드 파일 생성 중 오류 발생: {e}")
 
                 if f"last_gen_docx_{i}" in st.session_state:
                     saved_docx = st.session_state[f"last_gen_docx_{i}"]
-                    if saved_docx.get("file_path") and os.path.exists(saved_docx["file_path"]):
-                        folder_badge = "🆕 새 폴더 자동 생성됨" if saved_docx.get("is_new_folder") else "🔗 기존 구매요구번호 폴더 매칭됨"
-                        st.info(f"📂 **[{folder_badge}]** `{saved_docx['file_path']}`")
-                    elif saved_docx.get("folder_err"):
-                        st.warning(f"⚠️ 로컬 폴더 자동 저장 실패 (다운로드 버튼을 이용하세요): {saved_docx['folder_err']}")
+                    if IS_WINDOWS:
+                        if saved_docx.get("file_path") and os.path.exists(saved_docx["file_path"]):
+                            folder_badge = "🆕 새 폴더 자동 생성됨" if saved_docx.get("is_new_folder") else "🔗 기존 구매요구번호 폴더 매칭됨"
+                            st.info(f"📂 **[{folder_badge}]** `{saved_docx['file_path']}`")
+                        elif saved_docx.get("folder_err"):
+                            st.warning(f"⚠️ 로컬 폴더 자동 저장 실패 (다운로드 버튼을 이용하세요): {saved_docx['folder_err']}")
 
-                    c_ef, c_op, c_dl = st.columns([1.2, 0.9, 1.2])
-                    with c_ef:
-                        if st.button(f"✍️ [{i+1}번] 이폼싸인(eformsign) 바로 실행", key=f"btn_eform_{i}", type="primary", width="stretch", help="폴더에 저장된 워드 문서를 열고 eformsign 모듈 버튼을 자동으로 실행합니다."):
-                            target_docx_path = saved_docx.get("file_path")
-                            if not target_docx_path or not os.path.exists(target_docx_path):
-                                out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "output")
-                                os.makedirs(out_dir, exist_ok=True)
-                                safe_name = re.sub(r'[\\/*?:"<>|]', '_', saved_docx["name"])
-                                target_docx_path = os.path.join(out_dir, safe_name)
-                                with open(target_docx_path, "wb") as f_out:
-                                    f_out.write(saved_docx["bytes"])
-                            
-                            with st.spinner("⏳ 워드를 실행하고 이폼싸인 모듈을 호출하는 중입니다..."):
-                                try:
-                                    from local_tools.eformsign_trigger import trigger_eformsign_in_word
-                                    ok = trigger_eformsign_in_word(target_docx_path, "실행")
-                                    if ok:
-                                        st.success("🎉 이폼싸인 모듈이 성공적으로 호출되었습니다! 워드 창에서 전자결재를 계속 진행해 주세요.")
-                                    else:
-                                        st.error("🚨 이폼싸인 모듈 호출 실패: 워드가 정상 실행되었는지, 상단에 eformsign 탭이 있는지 확인해주세요.")
-                                except Exception as err:
-                                    st.error(f"🚨 이폼싸인 실행 에러: {err}")
-                    with c_op:
-                        if st.button(f"📁 [{i+1}번] 저장 폴더 열기", key=f"btn_open_con_dir_{i}", width="stretch"):
-                            f_to_open = saved_docx.get("folder_path")
-                            if f_to_open and os.path.exists(f_to_open):
-                                ok_o, err_o = open_local_folder(f_to_open)
-                                if not ok_o:
-                                    st.error(f"폴더 열기 실패: {err_o}")
-                            else:
-                                st.warning("저장된 로컬 폴더를 찾을 수 없습니다.")
-                    with c_dl:
+                        c_ef, c_op, c_dl = st.columns([1.2, 0.9, 1.2])
+                        with c_ef:
+                            if st.button(f"✍️ [{i+1}번] 이폼싸인(eformsign) 바로 실행", key=f"btn_eform_{i}", type="primary", width="stretch", help="폴더에 저장된 워드 문서를 열고 eformsign 모듈 버튼을 자동으로 실행합니다."):
+                                target_docx_path = saved_docx.get("file_path")
+                                if not target_docx_path or not os.path.exists(target_docx_path):
+                                    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "output")
+                                    os.makedirs(out_dir, exist_ok=True)
+                                    safe_name = re.sub(r'[\\/*?:"<>|]', '_', saved_docx["name"])
+                                    target_docx_path = os.path.join(out_dir, safe_name)
+                                    with open(target_docx_path, "wb") as f_out:
+                                        f_out.write(saved_docx["bytes"])
+                                
+                                with st.spinner("⏳ 워드를 실행하고 이폼싸인 모듈을 호출하는 중입니다..."):
+                                    try:
+                                        from local_tools.eformsign_trigger import trigger_eformsign_in_word
+                                        ok = trigger_eformsign_in_word(target_docx_path, "실행")
+                                        if ok:
+                                            st.success("🎉 이폼싸인 모듈이 성공적으로 호출되었습니다! 워드 창에서 전자결재를 계속 진행해 주세요.")
+                                        else:
+                                            st.error("🚨 이폼싸인 모듈 호출 실패: 워드가 정상 실행되었는지, 상단에 eformsign 탭이 있는지 확인해주세요.")
+                                    except Exception as err:
+                                        st.error(f"🚨 이폼싸인 실행 에러: {err}")
+                        with c_op:
+                            if st.button(f"📁 [{i+1}번] 저장 폴더 열기", key=f"btn_open_con_dir_{i}", width="stretch"):
+                                f_to_open = saved_docx.get("folder_path")
+                                if f_to_open and os.path.exists(f_to_open):
+                                    ok_o, err_o = open_local_folder(f_to_open)
+                                    if not ok_o:
+                                        st.error(f"폴더 열기 실패: {err_o}")
+                                else:
+                                    st.warning("저장된 로컬 폴더를 찾을 수 없습니다.")
+                        with c_dl:
+                            st.download_button(
+                                label=disp_dl_t,
+                                data=saved_docx["bytes"],
+                                file_name=saved_docx["name"],
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                key=f"btn_dl_{i}",
+                                width="stretch"
+                            )
+                    else:
+                        st.caption("☁️ 클라우드 웹 환경에서는 아래 다운로드 버튼을 눌러 발주서(.docx)를 PC로 내려받으세요.")
                         st.download_button(
                             label=disp_dl_t,
                             data=saved_docx["bytes"],
@@ -3678,10 +3718,22 @@ elif menu in [m_con, "🤝 구매계약분석", "구매계약분석", "🤝 구�
 # ----------------- [3. 분석내용 불러오기] -----------------
 elif menu in [m_his, "🕒 분석내역 불러오기", "분석내역 불러오기", "🕒 분석내용 불러오기", "분석내용 불러오기"]:
     render_top_header("🕒 분석내역 불러오기")
-    st.info("이전에 작업하고 저장해둔 분석 내역을 엑셀 대장처럼 확인하고, 언제든 다시 불러와서 이어서 작업할 수 있습니다.")
-    
+    c_his_info, c_his_ref = st.columns([5, 1])
+    with c_his_info:
+        st.info("이전에 작업하고 저장해둔 분석 내역을 엑셀 대장처럼 확인하고, 언제든 다시 불러와서 이어서 작업할 수 있습니다.")
+    with c_his_ref:
+        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 시트 새로고침", key="btn_refresh_history", width="stretch"):
+            clear_db_caches()
+            st.rerun()
+
     cache_list = get_cache_list()
-    
+
+    if not GSHEETS_URL:
+        st.warning("⚠️ `GSHEETS_URL` 시크릿이 설정되어 있지 않아 현재 로컬 캐시(`local_cache.json`)만 조회합니다. Streamlit Cloud `Secrets` 또는 `.env`에 `GSHEETS_URL`을 등록해주세요.")
+    elif st.session_state.get("_gsheets_last_error"):
+        st.warning(f"⚠️ 구글 시트 연동 중 오류가 발생해 로컬 캐시 기준으로 표시 중입니다: {st.session_state['_gsheets_last_error']}")
+
     if not cache_list:
         st.warning("아직 저장된 작업 내역이 없습니다. '구매요청 분석' 탭에서 작업을 마치고 [저장] 버튼을 눌러주세요.")
     else:
@@ -3708,43 +3760,68 @@ elif menu in [m_his, "🕒 분석내역 불러오기", "분석내역 불러오�
         
         if st.button("💾 대시보드 표 수정사항을 DB에 즉시 반영하기", type="secondary"):
             try:
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    cache_db = json.load(f)
-                
+                cache_db = _read_local_cache_dict()
                 cache_map = {item["구매요구번호"]: item for item in cache_list}
+                sheet_errs = []
+
+                def _clean_cell(v):
+                    if v is None or pd.isna(v):
+                        return ""
+                    return str(v).strip()
+
                 for _, row in edited_df.iterrows():
-                    req_no = str(row["구매요구번호"]) 
+                    req_no = _clean_cell(row.get("구매요구번호", ""))
+                    if not req_no:
+                        continue
                     orig = cache_map.get(req_no, {})
-                    changed = any(str(row.get(col, "")) != str(orig.get(col, "")) for col in row.index if col != "구매요구번호")
+                    changed = any(
+                        _clean_cell(row.get(col, "")) != _clean_cell(orig.get(col, ""))
+                        for col in row.index if col != "구매요구번호"
+                    )
 
-                    if req_no in cache_db:
-                        cache_db[req_no]["meta"]["과제번호"] = row["과제번호"]
-                        cache_db[req_no]["meta"]["구매요청액"] = row["구매요청액"]
-                        cache_db[req_no]["meta"]["연구책임자정보"] = row["연구책임자정보"]
-                        cache_db[req_no]["meta"]["물품담당자"] = row["물품담당자"]
-                        cache_db[req_no]["meta"]["업체명"] = row["업체명"]
-                        cache_db[req_no]["meta"]["업체담당자정보"] = row["업체담당자정보"]
-                        cache_db[req_no]["meta"]["업체담당자 정보"] = row["업체담당자정보"]
-                        if "비고사항" in row:
-                            cache_db[req_no]["meta"]["비고사항"] = row["비고사항"]
-                            cache_db[req_no]["meta"]["물품비고"] = row["비고사항"]
+                    if req_no not in cache_db:
+                        raw_loaded, meta_loaded = load_cache_entry(req_no)
+                        cache_db[req_no] = {
+                            "meta": dict(meta_loaded or orig),
+                            "raw": dict(raw_loaded or {})
+                        }
 
-                        # 수정한 행만 구글 시트에 즉시 반영
-                        if changed and GSHEETS_URL:
-                            try:
-                                gsheet_data = dict(cache_db[req_no]["meta"])
-                                gsheet_data["Raw_data"] = json.dumps(cache_db[req_no].get("raw", {}), ensure_ascii=False)
-                                requests.post(GSHEETS_URL, json={"data": gsheet_data}, timeout=6)
-                            except Exception as ge:
-                                log(f"구글 시트 수정 반영 에러 ({req_no}): {ge}")
-                
-                with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(cache_db, f, ensure_ascii=False, indent=2)
-                    
+                    meta_ref = cache_db[req_no].setdefault("meta", {})
+                    meta_ref["구매요구번호"] = req_no
+                    meta_ref["과제번호"] = _clean_cell(row.get("과제번호", ""))
+                    meta_ref["구매요청액"] = _clean_cell(row.get("구매요청액", ""))
+                    meta_ref["연구책임자정보"] = _clean_cell(row.get("연구책임자정보", ""))
+                    meta_ref["물품담당자"] = _clean_cell(row.get("물품담당자", ""))
+                    meta_ref["업체명"] = _clean_cell(row.get("업체명", ""))
+                    vendor_mgr_val = _clean_cell(row.get("업체담당자정보", ""))
+                    meta_ref["업체담당자정보"] = vendor_mgr_val
+                    meta_ref["업체담당자 정보"] = vendor_mgr_val
+                    if "비고사항" in row:
+                        rem_val = _clean_cell(row.get("비고사항", ""))
+                        meta_ref["비고사항"] = rem_val
+                        meta_ref["물품비고"] = rem_val
+
+                    # 수정한 행만 구글 시트에 즉시 반영
+                    if changed and GSHEETS_URL:
+                        try:
+                            gsheet_data = dict(meta_ref)
+                            gsheet_data["Raw_data"] = json.dumps(cache_db[req_no].get("raw", {}), ensure_ascii=False)
+                            res_p = requests.post(GSHEETS_URL, json={"data": gsheet_data}, timeout=15)
+                            if res_p.status_code != 200:
+                                sheet_errs.append(f"{req_no} (HTTP {res_p.status_code})")
+                        except Exception as ge:
+                            err_s = _sanitize_gsheets_err(ge)
+                            log(f"구글 시트 수정 반영 에러 ({req_no}): {err_s}")
+                            sheet_errs.append(f"{req_no} ({err_s})")
+
+                _write_local_cache_dict(cache_db)
                 clear_db_caches()
-                st.success("✅ 대시보드 수정사항이 로컬 및 구글 시트에 완벽하게 반영되었습니다!")
-                time.sleep(1)
-                st.rerun()
+                if sheet_errs:
+                    st.warning(f"⚠️ 로컬 캐시는 저장했으나 일부 구글 시트 반영에 실패했습니다: {', '.join(sheet_errs)}")
+                else:
+                    st.success("✅ 대시보드 수정사항이 로컬 및 구글 시트에 완벽하게 반영되었습니다!")
+                    time.sleep(1)
+                    st.rerun()
             except Exception as e:
                 st.error(f"🚨 DB 업데이트 중 오류 발생: {e}")
         
