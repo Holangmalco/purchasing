@@ -7,6 +7,7 @@
   * PDF 페이지 분할 & 특정 페이지 추출
   * PDF 고화질 용량 압축 (다이어트)
   * 누워있는 PDF 똑바로 세우기 (일괄 90도/180도 회전)
+  * 오류·비대 PDF 정리 및 편집/복사 제한 잠금해제 (열기 암호 파일 제외)
 - [탭 2] 한글 파일명 복구 (맥북 자소 분리 / 깨진 파일명 복구)
   * 맥북(macOS) NFD 자소 분리(ㅎㅏㄴㄱㅡㄹ) -> 윈도우 표준 NFC 결합 복구
   * 호환용 자모(Compatibility Jamo) 자모 결합 오토마타 완벽 지원
@@ -16,7 +17,10 @@
 """
 
 import os
+import re
 import sys
+import json
+import threading
 import unicodedata
 import winreg
 import ctypes
@@ -301,46 +305,20 @@ def convert_images_to_pdf(image_paths: list[str], output_pdf: str = None, merge_
         return False, created_pdfs, f"사진 변환 중 오류: {e}"
 
 
-def convert_doc_to_pdf(doc_path: str, output_pdf: str = None, excel_fit_mode: str = "width") -> tuple[bool, str, str]:
-    if not os.path.isfile(doc_path):
-        return False, "", "파일이 존재하지 않습니다."
+def _convert_text_to_pdf(abs_in: str, abs_out: str, ext: str) -> tuple[bool, str, str]:
+    try:
+        with open(abs_in, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+        page_w, page_h = 1240, 1754
+        margin = 60
+        line_height = 28
+        max_lines_per_page = (page_h - margin * 2) // line_height
 
-    ext = os.path.splitext(doc_path)[1].lower()
-    p_dir = os.path.dirname(doc_path)
-    stem = os.path.splitext(os.path.basename(doc_path))[0]
-    stem = repair_name(stem)
-
-    if not output_pdf:
-        output_pdf = get_unique_filename(os.path.join(p_dir, f"{stem}.pdf"))
-
-    abs_in = os.path.abspath(doc_path)
-    abs_out = os.path.abspath(output_pdf)
-
-    # 텍스트 문서 (.txt, .csv)
-    if ext in ('.txt', '.csv'):
-        try:
-            with open(abs_in, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-            page_w, page_h = 1240, 1754
-            margin = 60
-            line_height = 28
-            max_lines_per_page = (page_h - margin * 2) // line_height
-
-            pages_img = []
-            curr_lines = []
-            for line in lines:
-                curr_lines.append(line.rstrip('\r\n'))
-                if len(curr_lines) >= max_lines_per_page:
-                    img = Image.new("RGB", (page_w, page_h), color="white")
-                    draw = ImageDraw.Draw(img)
-                    y = margin
-                    for l in curr_lines:
-                        draw.text((margin, y), l, fill="black")
-                        y += line_height
-                    pages_img.append(img)
-                    curr_lines = []
-
-            if curr_lines or not pages_img:
+        pages_img = []
+        curr_lines = []
+        for line in lines:
+            curr_lines.append(line.rstrip('\r\n'))
+            if len(curr_lines) >= max_lines_per_page:
                 img = Image.new("RGB", (page_w, page_h), color="white")
                 draw = ImageDraw.Draw(img)
                 y = margin
@@ -348,169 +326,508 @@ def convert_doc_to_pdf(doc_path: str, output_pdf: str = None, excel_fit_mode: st
                     draw.text((margin, y), l, fill="black")
                     y += line_height
                 pages_img.append(img)
+                curr_lines = []
 
-            pages_img[0].save(
-                abs_out,
-                "PDF",
-                resolution=150.0,
-                save_all=True,
-                append_images=pages_img[1:]
-            )
-            return True, abs_out, f"텍스트 문서 변환 완료 ({ext.upper()} -> PDF)"
-        except Exception as e:
-            return False, "", f"텍스트 변환 실패: {e}"
+        if curr_lines or not pages_img:
+            img = Image.new("RGB", (page_w, page_h), color="white")
+            draw = ImageDraw.Draw(img)
+            y = margin
+            for l in curr_lines:
+                draw.text((margin, y), l, fill="black")
+                y += line_height
+            pages_img.append(img)
 
-    # 오피스 및 한글 문서 PowerShell 자동화 변환
-    ps_safe_in = abs_in.replace("'", "''")
-    ps_safe_out = abs_out.replace("'", "''")
+        pages_img[0].save(
+            abs_out,
+            "PDF",
+            resolution=150.0,
+            save_all=True,
+            append_images=pages_img[1:]
+        )
+        return True, abs_out, f"텍스트 문서 변환 완료 ({ext.upper()} -> PDF)"
+    except Exception as e:
+        return False, "", f"텍스트 변환 실패: {e}"
 
-    if ext in ('.docx', '.doc'):
-        ps = f'''
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$word = $null
-$doc = $null
-try {{
+
+def _build_com_batch_ps(app_kind: str, job_json_path: str, excel_fit_mode: str = "width") -> str:
+    safe_job_json = job_json_path.replace("'", "''")
+    header = f'''[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$jobs = @([System.IO.File]::ReadAllText('{safe_job_json}', [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+'''
+
+    if app_kind == "word":
+        return header + '''$word = $null
+try {
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
     $word.DisplayAlerts = 0
-    $doc = $word.Documents.Open('{ps_safe_in}', $false, $true)
-    $doc.ExportAsFixedFormat('{ps_safe_out}', 17)
-    Write-Output "SUCCESS"
-}} catch {{
-    Write-Output "ERROR: $($_.Exception.Message)"
-}} finally {{
-    if ($doc -ne $null) {{ $doc.Close([ref]$false); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null }}
-    if ($word -ne $null) {{ $word.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null }}
+    foreach ($job in $jobs) {
+        $doc = $null
+        try {
+            $doc = $word.Documents.Open($job.in, $false, $true)
+            $doc.ExportAsFixedFormat($job.out, 17)
+            if (Test-Path -LiteralPath $job.out) {
+                [Console]::Out.WriteLine("ITEM_OK|$($job.idx)|$($job.out)")
+            } else {
+                [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|PDF 파일이 생성되지 않았습니다.")
+            }
+            [Console]::Out.Flush()
+        } catch {
+            [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|$($_.Exception.Message)")
+            [Console]::Out.Flush()
+        } finally {
+            if ($doc -ne $null) {
+                try { $doc.Close([ref]$false) } catch {}
+                try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null } catch {}
+            }
+        }
+    }
+} catch {
+    [Console]::Out.WriteLine("FATAL|$($_.Exception.Message)")
+    [Console]::Out.Flush()
+} finally {
+    if ($word -ne $null) {
+        try { $word.Quit() } catch {}
+        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch {}
+    }
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
-}}
+}
 '''
-    elif ext in ('.xlsx', '.xls'):
+
+    if app_kind == "excel":
         fit_ps = ""
         if excel_fit_mode == "width":
             fit_ps = """
-    foreach ($ws in $wb.Worksheets) {
-        try {
-            $ws.PageSetup.Zoom = $false
-            $ws.PageSetup.FitToPagesWide = 1
-            $ws.PageSetup.FitToPagesTall = $false
-        } catch {}
-    }
+            foreach ($ws in $wb.Worksheets) {
+                try {
+                    $ws.PageSetup.Zoom = $false
+                    $ws.PageSetup.FitToPagesWide = 1
+                    $ws.PageSetup.FitToPagesTall = $false
+                } catch {}
+            }
 """
         elif excel_fit_mode == "sheet":
             fit_ps = """
-    foreach ($ws in $wb.Worksheets) {
-        try {
-            $ws.PageSetup.Zoom = $false
-            $ws.PageSetup.FitToPagesWide = 1
-            $ws.PageSetup.FitToPagesTall = 1
-        } catch {}
-    }
+            foreach ($ws in $wb.Worksheets) {
+                try {
+                    $ws.PageSetup.Zoom = $false
+                    $ws.PageSetup.FitToPagesWide = 1
+                    $ws.PageSetup.FitToPagesTall = 1
+                } catch {}
+            }
 """
-
-        ps = f'''
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$excel = $null
-$wb = $null
+        return header + f'''$excel = $null
 try {{
     $excel = New-Object -ComObject Excel.Application
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
     $excel.AskToUpdateLinks = $false
     $excel.AlertBeforeOverwriting = $false
-    $wb = $excel.Workbooks.Open('{ps_safe_in}', 0, $true)
+    foreach ($job in $jobs) {{
+        $wb = $null
+        try {{
+            $wb = $excel.Workbooks.Open($job.in, 0, $true)
 {fit_ps}
-    $wb.ExportAsFixedFormat(0, '{ps_safe_out}')
-    Write-Output "SUCCESS"
+            $wb.ExportAsFixedFormat(0, $job.out)
+            if (Test-Path -LiteralPath $job.out) {{
+                [Console]::Out.WriteLine("ITEM_OK|$($job.idx)|$($job.out)")
+            }} else {{
+                [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|PDF 파일이 생성되지 않았습니다.")
+            }}
+            [Console]::Out.Flush()
+        }} catch {{
+            [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|$($_.Exception.Message)")
+            [Console]::Out.Flush()
+        }} finally {{
+            if ($wb -ne $null) {{
+                try {{ $wb.Close($false) }} catch {{}}
+                try {{ [System.Runtime.InteropServices.Marshal]::ReleaseComObject($wb) | Out-Null }} catch {{}}
+            }}
+        }}
+    }}
 }} catch {{
-    Write-Output "ERROR: $($_.Exception.Message)"
+    [Console]::Out.WriteLine("FATAL|$($_.Exception.Message)")
+    [Console]::Out.Flush()
 }} finally {{
-    if ($wb -ne $null) {{ $wb.Close($false); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($wb) | Out-Null }}
-    if ($excel -ne $null) {{ $excel.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null }}
+    if ($excel -ne $null) {{
+        try {{ $excel.Quit() }} catch {{}}
+        try {{ [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null }} catch {{}}
+    }}
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
 }}
 '''
-    elif ext in ('.pptx', '.ppt'):
-        ps = f'''
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$ppt = $null
-$pres = $null
-try {{
-    $ppt = New-Object -ComObject PowerPoint.Application
-    $pres = $ppt.Presentations.Open('{ps_safe_in}', $true, $false, $false)
-    $pres.SaveAs('{ps_safe_out}', 32)
-    Write-Output "SUCCESS"
-}} catch {{
-    Write-Output "ERROR: $($_.Exception.Message)"
-}} finally {{
-    if ($pres -ne $null) {{ $pres.Close(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pres) | Out-Null }}
-    if ($ppt -ne $null) {{ $ppt.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($ppt) | Out-Null }}
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
-}}
-'''
-    elif ext in ('.hwp', '.hwpx'):
-        ps = f'''
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$hwp = $null
-try {{
-    $hwp = New-Object -ComObject HWPFrame.HwpObject
-    $hwp.Open('{ps_safe_in}', "HWP", "forceopen:true")
-    $hwp.SaveAs('{ps_safe_out}', "PDF")
-    Write-Output "SUCCESS"
-}} catch {{
-    Write-Output "ERROR: $($_.Exception.Message)"
-}} finally {{
-    if ($hwp -ne $null) {{ $hwp.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($hwp) | Out-Null }}
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
-}}
-'''
-    else:
-        return False, "", f"지원되지 않는 문서 확장자입니다: {ext}"
 
-    tf = os.path.join(tempfile.gettempdir(), f"_conv_{os.getpid()}_{hash(abs_in) & 0xffffffff}.ps1")
+    if app_kind == "ppt":
+        return header + '''$ppt = $null
+try {
+    $ppt = New-Object -ComObject PowerPoint.Application
+    foreach ($job in $jobs) {
+        $pres = $null
+        try {
+            $pres = $ppt.Presentations.Open($job.in, $true, $false, $false)
+            $pres.SaveAs($job.out, 32)
+            if (Test-Path -LiteralPath $job.out) {
+                [Console]::Out.WriteLine("ITEM_OK|$($job.idx)|$($job.out)")
+            } else {
+                [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|PDF 파일이 생성되지 않았습니다.")
+            }
+            [Console]::Out.Flush()
+        } catch {
+            [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|$($_.Exception.Message)")
+            [Console]::Out.Flush()
+        } finally {
+            if ($pres -ne $null) {
+                try { $pres.Close() } catch {}
+                try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pres) | Out-Null } catch {}
+            }
+        }
+    }
+} catch {
+    [Console]::Out.WriteLine("FATAL|$($_.Exception.Message)")
+    [Console]::Out.Flush()
+} finally {
+    if ($ppt -ne $null) {
+        try { $ppt.Quit() } catch {}
+        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($ppt) | Out-Null } catch {}
+    }
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+}
+'''
+
+    # HWP / HWPX: 1개 HwpObject 인스턴스 재사용 + 알림창 자동응답 + 보안모듈 자동연결 + 좀비 프로세스 방지
+    return header + '''$hwp = $null
+$spawnedPids = @()
+try {
+    $beforePids = @(Get-Process -Name Hwp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $hwp = New-Object -ComObject HWPFrame.HwpObject
+    $afterPids = @(Get-Process -Name Hwp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $spawnedPids = @($afterPids | Where-Object { $beforePids -notcontains $_ })
+    foreach ($sp in $spawnedPids) {
+        [Console]::Out.WriteLine("SPAWNED_PID|$sp")
+        [Console]::Out.Flush()
+    }
+
+    $regModPath = "HKCU:\\Software\\HNC\\HwpAutomation\\Modules"
+    $hasSecMod = $false
+    if (Test-Path $regModPath) {
+        try {
+            $props = (Get-ItemProperty -Path $regModPath -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object { $_.Name -notlike "PS*" }
+            foreach ($pr in $props) {
+                if ($pr.Name) {
+                    try {
+                        if ($hwp.RegisterModule("FilePathCheckDLL", [string]$pr.Name)) {
+                            $hasSecMod = $true
+                            break
+                        }
+                    } catch {}
+                }
+            }
+        } catch {}
+    }
+    if (-not $hasSecMod) {
+        [Console]::Out.WriteLine("INFO|한글 보안 승인 창이 뜨면 [모두 허용]을 한 번만 눌러주세요 (남은 HWP 연속 자동 변환)")
+        [Console]::Out.Flush()
+    }
+
+    try { $hwp.SetMessageBoxMode(0x00022011) } catch {}
+
+    foreach ($job in $jobs) {
+        try {
+            $opened = $hwp.Open($job.in, "", "forceopen:true;versionwarning:false;suspendpassword:true")
+            if (-not $opened) {
+                [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|한글 문서 열기 실패 (암호 설정·손상 또는 보안 승인 거부)")
+                [Console]::Out.Flush()
+                continue
+            }
+            $hwp.SaveAs($job.out, "PDF") | Out-Null
+            try { $hwp.Clear(1) } catch {}
+            if (Test-Path -LiteralPath $job.out) {
+                [Console]::Out.WriteLine("ITEM_OK|$($job.idx)|$($job.out)")
+            } else {
+                [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|PDF 파일이 생성되지 않았습니다 (보안 승인 거부 또는 저장 오류)")
+            }
+            [Console]::Out.Flush()
+        } catch {
+            try { $hwp.Clear(1) } catch {}
+            [Console]::Out.WriteLine("ITEM_ERR|$($job.idx)|$($_.Exception.Message)")
+            [Console]::Out.Flush()
+        }
+    }
+} catch {
+    [Console]::Out.WriteLine("FATAL|$($_.Exception.Message)")
+    [Console]::Out.Flush()
+} finally {
+    if ($hwp -ne $null) {
+        try { $hwp.SetMessageBoxMode(0) } catch {}
+        try { $hwp.Quit() } catch {}
+        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($hwp) | Out-Null } catch {}
+    }
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+    if ($spawnedPids.Count -gt 0) {
+        Start-Sleep -Milliseconds 300
+        foreach ($sp in $spawnedPids) {
+            try {
+                $pObj = Get-Process -Id $sp -ErrorAction SilentlyContinue
+                if ($pObj -ne $null) { Stop-Process -Id $sp -Force -ErrorAction SilentlyContinue }
+            } catch {}
+        }
+    }
+}
+'''
+
+
+def _format_com_error_detail(err: str) -> str:
+    if "80040154" in err or "클래스가 등록되지 않았습니다" in err:
+        return "PC에 해당 프로그램(MS Office/한글)이 설치되어 있지 않습니다."
+    if "800A03EC" in err:
+        return "엑셀 인쇄/PDF 설정 오류 (Windows 'Microsoft Print to PDF' 가상 프린터 확인 필요)"
+    return "해당 프로그램이 PC에 설치되어 있어야 합니다."
+
+
+def _kill_pid_force(pid: int) -> None:
     try:
-        with open(tf, 'w', encoding='utf-8-sig') as f:
-            f.write(ps)
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-        res = subprocess.run(
-            ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tf],
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
             capture_output=True,
+            startupinfo=si,
+            timeout=5
+        )
+    except Exception:
+        pass
+
+
+def _run_com_batch_group(
+    app_kind: str,
+    group_jobs: list[dict],
+    excel_fit_mode: str = "width",
+    on_progress=None
+) -> dict[int, tuple[bool, str, str]]:
+    """동일 프로그램(HWP/Word/Excel/PPT) 문서들을 COM 인스턴스 1개로 일괄 변환합니다."""
+    results = {}
+    uid = f"{os.getpid()}_{threading.get_ident()}_{abs(hash(group_jobs[0]['in'])) & 0xffffffff}"
+    job_file = os.path.join(tempfile.gettempdir(), f"_conv_jobs_{uid}.json")
+    ps_file = os.path.join(tempfile.gettempdir(), f"_conv_{uid}.ps1")
+    spawned_pids = []
+    timed_out = [False]
+    fatal_err = [""]
+    proc = None
+    timer = None
+
+    try:
+        with open(job_file, "w", encoding="utf-8") as jf:
+            json.dump(group_jobs, jf, ensure_ascii=False)
+        ps_code = _build_com_batch_ps(app_kind, job_file, excel_fit_mode=excel_fit_mode)
+        with open(ps_file, "w", encoding="utf-8-sig") as pf:
+            pf.write(ps_code)
+
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+
+        proc = subprocess.Popen(
+            ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps_file],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding='utf-8',
             errors='replace',
-            startupinfo=startupinfo,
-            timeout=120
+            startupinfo=si,
+            bufsize=1
         )
-        if "SUCCESS" in res.stdout and os.path.exists(abs_out):
-            fit_desc = ""
-            if ext in ('.xlsx', '.xls'):
-                if excel_fit_mode == "width":
-                    fit_desc = " [너비 1페이지 맞춤]"
-                elif excel_fit_mode == "sheet":
-                    fit_desc = " [시트 전체 1장 맞춤]"
-            return True, abs_out, f"문서 변환 성공 ({ext.upper()} -> PDF{fit_desc})"
-        else:
-            err = res.stdout.strip() or res.stderr.strip()
-            if "80040154" in err or "클래스가 등록되지 않았습니다" in err:
-                detail = "PC에 해당 프로그램(MS Office/한글)이 설치되어 있지 않습니다."
-            elif "800A03EC" in err:
-                detail = "엑셀 인쇄/PDF 설정 오류 (Windows 'Microsoft Print to PDF' 가상 프린터 확인 필요)"
-            else:
-                detail = "해당 프로그램이 PC에 설치되어 있어야 합니다"
-            return False, "", f"변환 실패: {err} ({detail})"
-    except Exception as e:
-        return False, "", f"변환 중 오류 발생: {e}"
-    finally:
-        if os.path.exists(tf):
+
+        timeout_sec = 90 + 30 * len(group_jobs)
+
+        def _on_timeout():
+            timed_out[0] = True
             try:
-                os.remove(tf)
+                if proc and proc.poll() is None:
+                    proc.kill()
             except Exception:
                 pass
+            for sp in list(spawned_pids):
+                _kill_pid_force(sp)
+
+        timer = threading.Timer(timeout_sec, _on_timeout)
+        timer.daemon = True
+        timer.start()
+
+        job_by_idx = {j["idx"]: j for j in group_jobs}
+        fit_desc = ""
+        if app_kind == "excel":
+            if excel_fit_mode == "width":
+                fit_desc = " [너비 1페이지 맞춤]"
+            elif excel_fit_mode == "sheet":
+                fit_desc = " [시트 전체 1장 맞춤]"
+
+        if proc.stdout:
+            for raw_line in proc.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("SPAWNED_PID|"):
+                    pid_str = line.split("|", 1)[1].strip()
+                    if pid_str.isdigit():
+                        spawned_pids.append(int(pid_str))
+                elif line.startswith("INFO|"):
+                    info_msg = line.split("|", 1)[1].strip()
+                    if on_progress and info_msg:
+                        on_progress("info", info_msg)
+                elif line.startswith("ITEM_OK|"):
+                    parts = line.split("|", 2)
+                    if len(parts) == 3 and parts[1].isdigit():
+                        idx = int(parts[1])
+                        out_p = parts[2]
+                        ext_u = os.path.splitext(job_by_idx[idx]["in"])[1].upper()
+                        msg = f"문서 변환 성공 ({ext_u} -> PDF{fit_desc})"
+                        results[idx] = (True, out_p, msg)
+                        if on_progress:
+                            on_progress("item_ok", (job_by_idx[idx]["in"], out_p, msg))
+                elif line.startswith("ITEM_ERR|"):
+                    parts = line.split("|", 2)
+                    if len(parts) == 3 and parts[1].isdigit():
+                        idx = int(parts[1])
+                        err_m = parts[2].strip()
+                        msg = f"변환 실패: {err_m}"
+                        results[idx] = (False, "", msg)
+                        if on_progress:
+                            on_progress("item_err", (job_by_idx[idx]["in"], msg))
+                elif line.startswith("FATAL|"):
+                    fatal_err[0] = line.split("|", 1)[1].strip()
+
+        stderr_txt = proc.stderr.read().strip() if proc.stderr else ""
+        proc.wait(timeout=5)
+
+        fallback_err = ""
+        if timed_out[0]:
+            fallback_err = f"변환 시간 초과({timeout_sec}초) — 한글/오피스 보안 승인 또는 팝업 대기 상태로 중단되었습니다."
+        elif fatal_err[0]:
+            fallback_err = f"변환 실패: {fatal_err[0]} ({_format_com_error_detail(fatal_err[0])})"
+        elif stderr_txt:
+            fallback_err = f"변환 실패: {stderr_txt} ({_format_com_error_detail(stderr_txt)})"
+        else:
+            fallback_err = "변환 실패: PDF 파일이 생성되지 않았습니다."
+
+        for j in group_jobs:
+            if j["idx"] not in results:
+                results[j["idx"]] = (False, "", fallback_err)
+                if on_progress:
+                    on_progress("item_err", (j["in"], fallback_err))
+    except Exception as e:
+        err_msg = f"변환 중 오류 발생: {e}"
+        for j in group_jobs:
+            if j["idx"] not in results:
+                results[j["idx"]] = (False, "", err_msg)
+                if on_progress:
+                    on_progress("item_err", (j["in"], err_msg))
+    finally:
+        if timer:
+            timer.cancel()
+        if proc and proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        for tmp_p in (job_file, ps_file):
+            if os.path.exists(tmp_p):
+                try:
+                    os.remove(tmp_p)
+                except Exception:
+                    pass
+
+    return results
+
+
+def convert_docs_batch_to_pdf(
+    doc_paths: list[str],
+    excel_fit_mode: str = "width",
+    output_map: dict[str, str] = None,
+    on_progress=None
+) -> list[tuple[str, bool, str, str]]:
+    """여러 문서를 앱 종류(HWP/Word/Excel/PPT/Text)별로 묶어 COM 1회 부팅으로 고속 일괄 변환합니다."""
+    output_map = output_map or {}
+    ext_to_kind = {
+        '.hwp': 'hwp', '.hwpx': 'hwp',
+        '.docx': 'word', '.doc': 'word',
+        '.xlsx': 'excel', '.xls': 'excel',
+        '.pptx': 'ppt', '.ppt': 'ppt',
+        '.txt': 'text', '.csv': 'text',
+    }
+
+    results_by_idx = {}
+    groups = {'hwp': [], 'word': [], 'excel': [], 'ppt': []}
+    reserved_outs = set()
+
+    for idx, doc_path in enumerate(doc_paths):
+        if not os.path.isfile(doc_path):
+            msg = "파일이 존재하지 않습니다."
+            results_by_idx[idx] = (False, "", msg)
+            if on_progress:
+                on_progress("item_err", (doc_path, msg))
+            continue
+
+        ext = os.path.splitext(doc_path)[1].lower()
+        kind = ext_to_kind.get(ext)
+        if not kind:
+            msg = f"지원되지 않는 문서 확장자입니다: {ext}"
+            results_by_idx[idx] = (False, "", msg)
+            if on_progress:
+                on_progress("item_err", (doc_path, msg))
+            continue
+
+        abs_in = os.path.abspath(doc_path)
+        if doc_path in output_map and output_map[doc_path]:
+            abs_out = os.path.abspath(output_map[doc_path])
+        else:
+            p_dir = os.path.dirname(abs_in)
+            stem = repair_name(os.path.splitext(os.path.basename(abs_in))[0])
+            cand = get_unique_filename(os.path.join(p_dir, f"{stem}.pdf"))
+            suffix_i = 1
+            while os.path.normcase(cand) in reserved_outs or os.path.exists(cand):
+                cand = os.path.join(p_dir, f"{stem} ({suffix_i}).pdf")
+                suffix_i += 1
+            abs_out = os.path.abspath(cand)
+        reserved_outs.add(os.path.normcase(abs_out))
+
+        if kind == 'text':
+            ok, out_p, msg = _convert_text_to_pdf(abs_in, abs_out, ext)
+            results_by_idx[idx] = (ok, out_p, msg)
+            if on_progress:
+                if ok:
+                    on_progress("item_ok", (abs_in, out_p, msg))
+                else:
+                    on_progress("item_err", (abs_in, msg))
+        else:
+            groups[kind].append({"idx": idx, "in": abs_in, "out": abs_out})
+
+    for kind in ('hwp', 'word', 'excel', 'ppt'):
+        if groups[kind]:
+            grp_res = _run_com_batch_group(
+                kind,
+                groups[kind],
+                excel_fit_mode=excel_fit_mode,
+                on_progress=on_progress
+            )
+            results_by_idx.update(grp_res)
+
+    return [
+        (doc_paths[i], *results_by_idx.get(i, (False, "", "변환 결과가 없습니다.")))
+        for i in range(len(doc_paths))
+    ]
+
+
+def convert_doc_to_pdf(doc_path: str, output_pdf: str = None, excel_fit_mode: str = "width") -> tuple[bool, str, str]:
+    out_map = {doc_path: output_pdf} if output_pdf else None
+    res = convert_docs_batch_to_pdf([doc_path], excel_fit_mode=excel_fit_mode, output_map=out_map)
+    _, ok, out_p, msg = res[0]
+    return ok, out_p, msg
 
 
 def merge_pdfs(pdf_paths: list[str], output_pdf: str = None, sort_by_name: bool = True) -> tuple[bool, str, str]:
@@ -626,6 +943,113 @@ def rotate_pdf(pdf_path: str, angle: int = 90) -> tuple[bool, str, str]:
         return False, "", f"PDF 회전 중 오류: {e}"
 
 
+def _save_pdf_as_images(doc: pdfium.PdfDocument, out_path: str, dpi: int = 150, quality: int = 75) -> None:
+    """PDF 각 페이지를 지정 해상도의 RGB 이미지로 렌더링해 새 PDF 파일로 저장합니다."""
+    pil_pages = []
+    scale = dpi / 72.0
+    for page in doc:
+        img = page.render(scale=scale).to_pil()
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        pil_pages.append(img)
+
+    pil_pages[0].save(
+        out_path,
+        "PDF",
+        resolution=float(dpi),
+        quality=quality,
+        save_all=True,
+        append_images=pil_pages[1:]
+    )
+
+
+def _format_file_size(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.2f}MB"
+    return f"{max(1, round(size_bytes / 1024))}KB"
+
+
+def _inspect_pdf_cleanup_meta(pdf_path: str, orig_size: int) -> tuple[bool, int]:
+    """원본 PDF 내 보안(/Encrypt) 플래그 및 잔존 페이지 마커(/Type /Page) 개수를 점검합니다."""
+    if orig_size > 50 * 1024 * 1024:
+        return False, 0
+    try:
+        with open(pdf_path, "rb") as fp:
+            raw = fp.read()
+        has_encrypt = bool(re.search(rb'/Encrypt\b', raw))
+        raw_page_count = len(re.findall(rb'/Type\s*/Page\b', raw))
+        return has_encrypt, raw_page_count
+    except Exception:
+        return False, 0
+
+
+def repair_and_unlock_pdf(pdf_path: str, fallback_rasterize: bool = True) -> tuple[bool, str, str]:
+    """증분 저장 찌꺼기·구조 오류를 정리하고 편집/복사 제한(/Encrypt)을 제거한 새 PDF를 생성합니다."""
+    if not os.path.isfile(pdf_path) or not pdf_path.lower().endswith('.pdf'):
+        return False, "", "유효한 PDF 파일이 아닙니다."
+
+    src_doc = None
+    try:
+        orig_size = os.path.getsize(pdf_path)
+        has_encrypt, raw_page_count = _inspect_pdf_cleanup_meta(pdf_path, orig_size)
+
+        try:
+            src_doc = pdfium.PdfDocument(pdf_path)
+        except Exception as open_err:
+            err_code = getattr(open_err, "err_code", None)
+            if err_code == 4 or "password" in str(open_err).lower():
+                return False, "", "건너뜀: 열기 비밀번호(암호)가 걸려 있는 PDF는 지원하지 않습니다."
+            return False, "", f"PDF 열기 실패: {open_err}"
+
+        total_pages = len(src_doc)
+        if total_pages == 0:
+            return False, "", "빈 PDF 문서입니다."
+
+        p_dir = os.path.dirname(pdf_path)
+        stem = repair_name(os.path.splitext(os.path.basename(pdf_path))[0])
+        out_p = get_unique_filename(os.path.join(p_dir, f"{stem}_복구.pdf"))
+
+        used_raster = False
+        try:
+            dest_doc = pdfium.PdfDocument.new()
+            try:
+                dest_doc.import_pages(src_doc)
+                dest_doc.save(out_p)
+            finally:
+                dest_doc.close()
+        except Exception as rebuild_err:
+            if os.path.exists(out_p):
+                try:
+                    os.remove(out_p)
+                except Exception:
+                    pass
+            if not fallback_rasterize:
+                return False, "", f"PDF 구조 재조립 실패: {rebuild_err}"
+            _save_pdf_as_images(src_doc, out_p, dpi=150, quality=85)
+            used_raster = True
+
+        new_size = os.path.getsize(out_p)
+        notes = []
+        if has_encrypt:
+            notes.append("편집·복사 제한 해제")
+        if raw_page_count > total_pages:
+            notes.append(f"찌꺼기 페이지 정리({raw_page_count}→{total_pages}p)")
+        if used_raster:
+            notes.append("이미지 재저장 복구")
+
+        detail = f" | {', '.join(notes)}" if notes else ""
+        msg = f"복구 완료 ({total_pages}p, {_format_file_size(orig_size)} -> {_format_file_size(new_size)}{detail})"
+        return True, out_p, msg
+    except Exception as e:
+        return False, "", f"PDF 복구·잠금해제 중 오류: {e}"
+    finally:
+        if src_doc is not None:
+            try:
+                src_doc.close()
+            except Exception:
+                pass
+
+
 def compress_pdf(pdf_path: str, dpi: int = 150, quality: int = 75) -> tuple[bool, str, str]:
     if not os.path.isfile(pdf_path) or not pdf_path.lower().endswith('.pdf'):
         return False, "", "유효한 PDF 파일이 아닙니다."
@@ -638,28 +1062,15 @@ def compress_pdf(pdf_path: str, dpi: int = 150, quality: int = 75) -> tuple[bool
             doc.close()
             return False, "", "빈 PDF 문서입니다."
 
-        pil_pages = []
-        scale = dpi / 72.0
-        for page in doc:
-            img = page.render(scale=scale).to_pil()
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            pil_pages.append(img)
-        doc.close()
-
         p_dir = os.path.dirname(pdf_path)
         stem = os.path.splitext(os.path.basename(pdf_path))[0]
         stem = repair_name(stem)
         out_p = get_unique_filename(os.path.join(p_dir, f"{stem}_압축.pdf"))
 
-        pil_pages[0].save(
-            out_p,
-            "PDF",
-            resolution=float(dpi),
-            quality=quality,
-            save_all=True,
-            append_images=pil_pages[1:]
-        )
+        try:
+            _save_pdf_as_images(doc, out_p, dpi=dpi, quality=quality)
+        finally:
+            doc.close()
 
         new_size = os.path.getsize(out_p)
         ratio = (1.0 - (new_size / orig_size)) * 100 if orig_size > 0 else 0
@@ -899,6 +1310,7 @@ def launch_main_gui():
             self.configure(fg_color="#F8F9FA")
 
             self.current_mode = "conv"
+            self._is_busy = False
 
             # 작업 옵션 변수
             self.img_merge_var = ctk.BooleanVar(value=False)
@@ -907,6 +1319,7 @@ def launch_main_gui():
             self.split_range_var = ctk.StringVar(value="")
             self.compress_level_var = ctk.StringVar(value="보통 (150 DPI)")
             self.rotate_angle_var = ctk.StringVar(value="90° ↻")
+            self.repair_fallback_var = ctk.BooleanVar(value=True)
 
             # 2열 그리드 레이아웃
             self.grid_columnconfigure(0, weight=0, minsize=220)
@@ -963,6 +1376,7 @@ def launch_main_gui():
                 ("split", "✂️  페이지 분할·추출"),
                 ("compress", "📉  용량 압축"),
                 ("rotate", "🔄  방향 회전"),
+                ("repair", "🛡️  PDF 복구·잠금해제"),
             ]
 
             for key, label in modes:
@@ -1318,7 +1732,27 @@ def launch_main_gui():
             )
             self.seg_rot.pack(side="left", padx=(0, 14), pady=10)
 
-            # (6) 한글 복구 옵션
+            # (6) PDF 복구·잠금해제 옵션
+            self.opt_repair = ctk.CTkFrame(self.options_card, fg_color="transparent")
+            self.sw_repair_fallback = ctk.CTkSwitch(
+                self.opt_repair,
+                text="구조 손상 시 이미지로 재저장(폴백)",
+                variable=self.repair_fallback_var,
+                font=("Segoe UI", 13, "bold"),
+                text_color="#191F28",
+                progress_color="#3182F6"
+            )
+            self.sw_repair_fallback.pack(side="left", padx=14, pady=10)
+
+            lbl_repair_info = ctk.CTkLabel(
+                self.opt_repair,
+                text="(열기 비밀번호가 걸린 PDF는 제외)",
+                font=("Segoe UI", 13),
+                text_color="#6B7684"
+            )
+            lbl_repair_info.pack(side="left", padx=(0, 14), pady=10)
+
+            # (7) 한글 복구 옵션
             self.opt_fixer = ctk.CTkFrame(self.options_card, fg_color="transparent")
             lbl_fixer_info = ctk.CTkLabel(
                 self.opt_fixer,
@@ -1353,6 +1787,7 @@ def launch_main_gui():
             self.opt_split.pack_forget()
             self.opt_compress.pack_forget()
             self.opt_rotate.pack_forget()
+            self.opt_repair.pack_forget()
             self.opt_fixer.pack_forget()
             self.btn_pick_folder.pack_forget()
 
@@ -1391,6 +1826,13 @@ def launch_main_gui():
                 self.lbl_drop_title.configure(text="회전할 PDF 파일을 여기에 놓으세요")
                 self.btn_pick_primary.configure(text="파일 선택")
                 self.opt_rotate.pack(fill="x")
+            elif mode == "repair":
+                self.lbl_mode_title.configure(text="PDF 복구·잠금해제")
+                self.lbl_mode_desc.configure(text="오류·찌꺼기 페이지 정리 및 편집·복사 제한 해제 (열기 암호 파일 제외)")
+                self.lbl_drop_icon.configure(text="🛡️")
+                self.lbl_drop_title.configure(text="복구하거나 잠금 해제할 PDF를 여기에 놓으세요")
+                self.btn_pick_primary.configure(text="파일 선택")
+                self.opt_repair.pack(fill="x")
             elif mode == "fixer":
                 self.lbl_mode_title.configure(text="파일명 복구")
                 self.lbl_mode_desc.configure(text="맥북(NFD) 자소 분리 및 인코딩 깨짐 복구")
@@ -1399,6 +1841,9 @@ def launch_main_gui():
                 self.btn_pick_primary.configure(text="파일 선택")
                 self.btn_pick_folder.pack(side="left", padx=4)
                 self.opt_fixer.pack(fill="x")
+
+            if self._is_busy:
+                self.btn_pick_primary.configure(state="disabled", text="변환 중...")
 
         def log(self, message):
             self.txt_log.insert("end", str(message) + "\n")
@@ -1458,7 +1903,18 @@ def launch_main_gui():
                 winsound.MessageBeep(winsound.MB_ICONINFORMATION)
                 messagebox.showinfo("확인", "깨진 파일명이 없거나 이미 정상입니다.")
 
+        def _set_busy(self, busy: bool, label: str = "변환 중..."):
+            self._is_busy = busy
+            if busy:
+                self.btn_pick_primary.configure(state="disabled", text=label)
+            else:
+                self.btn_pick_primary.configure(state="normal", text="파일 선택")
+
         def handle_pdf_items(self, item_list):
+            if self._is_busy:
+                self.log("⏳ 이전 변환 작업이 진행 중입니다. 완료 후 다시 시도해 주세요.")
+                return
+
             mode = self.current_mode
             paths = []
             for it in item_list:
@@ -1483,32 +1939,70 @@ def launch_main_gui():
                     messagebox.showwarning("파일 확인", "변환 가능한 사진이나 문서 파일이 없습니다.")
                     return
 
-                if img_files:
-                    merge_flag = self.img_merge_var.get()
-                    ok, out_pdfs, msg = convert_images_to_pdf(img_files, merge_into_single=merge_flag)
-                    if ok:
-                        self.log(f"📷 {msg}")
-                        for op in out_pdfs:
-                            self.log(f"   -> {os.path.basename(op)}")
-                    else:
-                        self.log(f"❌ {msg}")
+                merge_flag = self.img_merge_var.get()
+                cur_fit_val = self.excel_fit_var.get()
+                fit_mode = "width" if "너비" in cur_fit_val else ("sheet" if "전체" in cur_fit_val else "none")
 
-                if doc_files:
-                    cur_fit_val = self.excel_fit_var.get()
-                    fit_mode = "width" if "너비" in cur_fit_val else ("sheet" if "전체" in cur_fit_val else "none")
-                    self.log(f"📄 문서 {len(doc_files)}개 변환 시작...")
-                    succ_cnt = 0
-                    for df in doc_files:
-                        ok, out_pdf, msg = convert_doc_to_pdf(df, excel_fit_mode=fit_mode)
-                        if ok:
-                            succ_cnt += 1
-                            self.log(f"   • {os.path.basename(df)} -> {os.path.basename(out_pdf)}")
-                        else:
-                            self.log(f"   ❌ {os.path.basename(df)}: {msg}")
-                    self.log(f"📄 문서 변환 완료: {len(doc_files)}개 중 {succ_cnt}개 성공")
+                self._set_busy(True, "변환 중...")
 
-                winsound.MessageBeep(winsound.MB_ICONASTERISK)
-                messagebox.showinfo("완료", "PDF 변환이 완료되었습니다.")
+                def _worker():
+                    img_ok_cnt = 0
+                    doc_ok_cnt = 0
+                    doc_fail_cnt = 0
+                    try:
+                        if img_files:
+                            ok, out_pdfs, msg = convert_images_to_pdf(img_files, merge_into_single=merge_flag)
+                            if ok:
+                                img_ok_cnt = len(out_pdfs)
+                                self.after(0, lambda m=msg: self.log(f"📷 {m}"))
+                                for op in out_pdfs:
+                                    self.after(0, lambda p=op: self.log(f"   -> {os.path.basename(p)}"))
+                            else:
+                                self.after(0, lambda m=msg: self.log(f"❌ {m}"))
+
+                        if doc_files:
+                            self.after(0, lambda n=len(doc_files): self.log(f"📄 문서 {n}개 일괄 변환 시작..."))
+
+                            def _on_prog(ev, payload):
+                                if ev == "info":
+                                    self.after(0, lambda m=payload: self.log(f"💡 {m}"))
+                                elif ev == "item_ok":
+                                    in_p, out_p, _ = payload
+                                    self.after(0, lambda i=in_p, o=out_p: self.log(f"   • {os.path.basename(i)} -> {os.path.basename(o)}"))
+                                elif ev == "item_err":
+                                    in_p, err_m = payload
+                                    self.after(0, lambda i=in_p, m=err_m: self.log(f"   ❌ {os.path.basename(i)}: {m}"))
+
+                            batch_res = convert_docs_batch_to_pdf(
+                                doc_files,
+                                excel_fit_mode=fit_mode,
+                                on_progress=_on_prog
+                            )
+                            doc_ok_cnt = sum(1 for _, ok_flag, _, _ in batch_res if ok_flag)
+                            doc_fail_cnt = len(batch_res) - doc_ok_cnt
+                            self.after(0, lambda tot=len(doc_files), sc=doc_ok_cnt: self.log(f"📄 문서 변환 완료: {tot}개 중 {sc}개 성공"))
+
+                        def _finish_ui():
+                            self._set_busy(False)
+                            if img_ok_cnt > 0 or doc_ok_cnt > 0:
+                                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                                msg_done = "PDF 변환이 완료되었습니다."
+                                if doc_fail_cnt > 0:
+                                    msg_done += f"\n(실패 {doc_fail_cnt}건은 하단 처리 내역을 확인하세요.)"
+                                messagebox.showinfo("완료", msg_done)
+                            else:
+                                winsound.MessageBeep(winsound.MB_ICONHAND)
+                                messagebox.showwarning("변환 실패", "변환된 PDF가 없습니다.\n하단 처리 내역을 확인하세요.")
+
+                        self.after(0, _finish_ui)
+                    except Exception as ex:
+                        self.after(0, lambda e=ex: (
+                            self._set_busy(False),
+                            self.log(f"❌ 변환 작업 중 예외 발생: {e}"),
+                            messagebox.showerror("오류", f"변환 중 오류가 발생했습니다:\n{e}")
+                        ))
+
+                threading.Thread(target=_worker, daemon=True).start()
 
             elif mode == "merge":
                 pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
@@ -1593,6 +2087,36 @@ def launch_main_gui():
 
                 winsound.MessageBeep(winsound.MB_ICONASTERISK)
                 messagebox.showinfo("완료", f"{succ_cnt}개 PDF가 회전되었습니다.")
+
+            elif mode == "repair":
+                pdf_files = [p for p in paths if p.lower().endswith('.pdf')]
+                if not pdf_files:
+                    self.log("⚠️ 복구·잠금해제할 PDF 파일이 없습니다.")
+                    return
+
+                fallback_flag = self.repair_fallback_var.get()
+                self.log(f"🛡️ PDF 복구·잠금해제 진행 중 ({len(pdf_files)}개)...")
+                succ_cnt = 0
+                fail_cnt = 0
+                for pf in pdf_files:
+                    ok, out_p, msg = repair_and_unlock_pdf(pf, fallback_rasterize=fallback_flag)
+                    if ok:
+                        succ_cnt += 1
+                        self.log(f"   • [{os.path.basename(pf)}] {msg}")
+                        self.log(f"     -> {os.path.basename(out_p)}")
+                    else:
+                        fail_cnt += 1
+                        self.log(f"   ⚠️ [{os.path.basename(pf)}] {msg}")
+
+                if succ_cnt > 0:
+                    winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                    summary = f"{succ_cnt}개 PDF의 복구·잠금해제가 완료되었습니다."
+                    if fail_cnt > 0:
+                        summary += f"\n(제외/실패 {fail_cnt}건은 처리 내역을 확인하세요.)"
+                    messagebox.showinfo("완료", summary)
+                else:
+                    winsound.MessageBeep(winsound.MB_ICONHAND)
+                    messagebox.showwarning("처리 불가", "복구·잠금해제된 PDF가 없습니다.\n하단 처리 내역을 확인하세요.")
 
         def _on_register_menu(self):
             ok, msg = register_context_menu()

@@ -6,17 +6,25 @@ import sys
 # os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 import re
+import calendar
 import datetime
 import pandas as pd
 import time
 import json
 import difflib
+from typing import List
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from io import BytesIO
 from docxtpl import DocxTemplate
 from dotenv import load_dotenv
 import requests
+
+try:
+    import pypdfium2 as _pdfium
+except Exception:
+    _pdfium = None
 
 _PAGE_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PAGE_ROOT_DIR not in sys.path:
@@ -79,7 +87,11 @@ def check_nts_business(biz_no_str, api_key=""):
 # ==========================================
 DEBUG = False 
 MAX_FILE_SIZE_MB = 10
-AI_MODEL = "gemini-2.5-flash"
+AI_MODEL = "gemini-3.5-flash-lite"
+AI_FALLBACK_MODELS = [
+    ("gemini-3.5-flash-lite", 1),
+    ("gemini-3.1-flash-lite", 1),
+]
 SESSION_AI_KEY = "ai_res"
 SESSION_REQ_KEY = "req_analysis_done"
 REQUIRED_FILES = ["template_under10mil.docx", "template_over10mil.docx", "template_new_faculty.docx"]
@@ -272,7 +284,7 @@ if missing_keys:
     )
     st.stop()
 
-ai_client = genai.Client(api_key=API_KEY, http_options={"api_version": "v1beta"})
+ai_client = genai.Client(api_key=API_KEY, http_options={"api_version": "v1beta", "timeout": 35000})
 
 INSPECTOR_INFO = APP_CONFIG.get("inspector_info", DEFAULT_APP_CONFIG["inspector_info"])
 BUYER_STAFF = APP_CONFIG.get("buyer_staff", DEFAULT_APP_CONFIG["buyer_staff"])
@@ -805,6 +817,14 @@ def _normalize_req_no(val):
 
 _LEGAL_ENTITY_TOKENS = {'주', '유', '사', '자', '재', '합', '복', '합자', '합명', '주식회사', '유한회사', '사단법인', '재단법인', '유한책임회사'}
 
+def _normalize_keep_parens(name_str):
+    """법인격 표기만 제거하되, 괄호 안 상호(예: '최지운(아이맥스)')는 유지한 채 정규화합니다."""
+    merged_src = re.sub(r'\(\s*[주유사자재합]\s*\)|㈜|㈲', '', str(name_str or ''))
+    merged = re.sub(r'[^\w가-힣]', '', merged_src).lower()
+    for kw in ('주식회사', '유한회사', '합자회사', '합명회사', '사단법인', '재단법인', '유한책임회사'):
+        merged = merged.replace(kw, '')
+    return merged.strip()
+
 def _vendor_name_variants(name_str):
     """'JSC(제이에스씨)' 같은 한/영 병기 상호에서 괄호 안팎 표기를 모두 비교 후보로 추출합니다."""
     raw = str(name_str or "").strip()
@@ -818,13 +838,80 @@ def _vendor_name_variants(name_str):
         inner_clean = clean_name(inner)
         if len(inner_clean) >= 2 and inner_clean not in _LEGAL_ENTITY_TOKENS:
             variants.add(inner_clean)
-    merged_src = re.sub(r'\(\s*[주유사자재합]\s*\)|㈜|㈲', '', raw)
-    merged = re.sub(r'[^\w가-힣]', '', merged_src).lower()
-    for kw in ('주식회사', '유한회사', '합자회사', '합명회사', '사단법인', '재단법인', '유한책임회사'):
-        merged = merged.replace(kw, '')
+    merged = _normalize_keep_parens(raw)
     if len(merged) >= 2:
         variants.add(merged)
     return variants
+
+def verify_account_holder_match(vendor_name, rep_name, bank_holder):
+    """통장 예금주와 상호·대표자명을 대조해 검증 결과 문구와 반려 사유를 반환합니다.
+
+    개인사업자도 통장 예금주에 상호가 빠지고 대표자 성명만 적혀 있으면 상호 미기재로 반려합니다.
+    """
+    v_str = str(vendor_name or '').strip()
+    r_str = str(rep_name or '').strip()
+    b_str = str(bank_holder or '').strip()
+    b_cmp = re.sub(r'\s+님\s*$', '', b_str).strip()
+
+    cb = _normalize_keep_parens(b_cmp)
+    if is_missing(b_str) or not cb:
+        return "⚠️ 통장사본 미검출", None
+
+    cv = _normalize_keep_parens(v_str)
+    cr = clean_name(r_str)
+    v_variants = _vendor_name_variants(v_str)
+    h_variants = _vendor_name_variants(b_cmp)
+    if len(cv) >= 2:
+        v_variants.add(cv)
+    if len(cb) >= 2:
+        h_variants.add(cb)
+
+    is_corp = any(kw in v_str for kw in ["주식회사", "(주)", "㈜", "유한회사", "(유)", "㈲", "Inc", "Ltd"])
+    rep_only = bool(cr and len(cr) >= 2 and h_variants == {cr} and cv != cr)
+
+    vendor_matched = False
+    if not rep_only and v_variants and h_variants:
+        for vt in v_variants:
+            for ht in h_variants:
+                if vt == ht or vt in ht:
+                    vendor_matched = True
+                    break
+                if len(ht) >= 4 and ht != cr and ht in vt:
+                    vendor_matched = True
+                    break
+                if len(vt) >= 3 and len(ht) >= 3 and difflib.SequenceMatcher(None, vt, ht).ratio() >= 0.7:
+                    vendor_matched = True
+                    break
+            if vendor_matched:
+                break
+
+    if is_corp:
+        if vendor_matched:
+            return "✅ 일치 (법인명 예금주 정상)", None
+        return (
+            f"🚨 불일치 의심 (예금주: {b_str} / 법인명: {v_str})",
+            f"통장 예금주({b_str})와 법인명({v_str}) 불일치",
+        )
+
+    if vendor_matched:
+        return "✅ 일치 (예금주 상호 확인 정상)", None
+
+    rep_matched = bool(
+        cr and len(cr) >= 2 and (
+            cr in h_variants
+            or any(cr in ht or difflib.SequenceMatcher(None, cr, ht).ratio() >= 0.7 for ht in h_variants)
+        )
+    )
+    if rep_matched:
+        return (
+            f"🚨 상호 미기재 (예금주: {b_str} / 대표자명만 기재됨 - 상호: {v_str})",
+            f"통장사본 예금주에 상호 미기재 (예금주 '{b_str}' — 대표자명만 기재되어 상호 '{v_str}' 병기 통장 또는 사업자계좌 확인 필요)",
+        )
+
+    return (
+        f"🚨 불일치 의심 (예금주: {b_str} / 업체명: {v_str} / 대표자: {r_str})",
+        f"통장 예금주({b_str})와 사업자 명의 불일치",
+    )
 
 def _parse_record_kst_date(val):
     """ISO UTC('...Z') 또는 'YYYY-MM-DD' / 'YYYY. M. D' 형식을 KST date로 안전 변환합니다."""
@@ -1318,6 +1405,290 @@ def generate_opinion(req_type, contract_type, amount, item_list, raw_finance_tex
 # ==========================================
 # 4. AI 서류 검증 엔진
 # ==========================================
+class _AIQuoteItem(BaseModel):
+    품명: str
+    수량: int
+    단가: int
+    금액: int
+
+
+class _AIQuoteDoc(BaseModel):
+    업체명: str
+    사업자번호: str
+    대표자명: str
+    담당자: str
+    연락처: str
+    이메일: str
+    수신자: str
+    발행일자: str
+    유효기간문구: str
+    공급가액: int
+    부가세: int
+    총금액: int
+    품목리스트: List[_AIQuoteItem]
+
+
+class _AIExtractionSchema(BaseModel):
+    사업자등록증_상호명: str
+    사업자등록증_등록번호: str
+    사업자등록증_대표자명: str
+    통장사본_예금주: str
+    통장사본_계좌번호: str
+    통장사본_은행명: str
+    견적서목록: List[_AIQuoteDoc]
+    동일규격확인: str
+    공사확인서유무: str
+
+
+def _format_bizno_10(val):
+    digits = re.sub(r'[^\d]', '', str(val or ''))
+    if len(digits) == 10:
+        return f"{digits[:3]}-{digits[3:5]}-{digits[5:]}"
+    return str(val or '').strip()
+
+
+def _parse_ymd_date(val):
+    s = str(val or '').strip()
+    m = re.search(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})', s)
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _add_months(dt, months):
+    total_m = (dt.month - 1) + months
+    year = dt.year + total_m // 12
+    month = (total_m % 12) + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return datetime.date(year, month, day)
+
+
+def _compute_expiry_date(issue_date_str, validity_text):
+    raw_v = str(validity_text or '').strip()
+    if not raw_v or any(kw in raw_v for kw in ["무기한", "없음", "해당없음", "미기재", "공란", "별도 표기 없음"]):
+        return "무기한"
+
+    explicit_dt = _parse_ymd_date(raw_v)
+    if explicit_dt:
+        return explicit_dt.strftime('%Y-%m-%d')
+
+    issue_dt = _parse_ymd_date(issue_date_str)
+    if issue_dt:
+        m_mon = re.search(r'(\d+)\s*(?:개?월|달)', raw_v)
+        if m_mon:
+            return _add_months(issue_dt, int(m_mon.group(1))).strftime('%Y-%m-%d')
+        if "한달" in raw_v.replace(" ", ""):
+            return _add_months(issue_dt, 1).strftime('%Y-%m-%d')
+        m_wk = re.search(r'(\d+)\s*주', raw_v)
+        if m_wk:
+            return (issue_dt + datetime.timedelta(weeks=int(m_wk.group(1)))).strftime('%Y-%m-%d')
+        m_day = re.search(r'(\d+)\s*일', raw_v)
+        if m_day:
+            return (issue_dt + datetime.timedelta(days=int(m_day.group(1)))).strftime('%Y-%m-%d')
+        if any(kw in raw_v for kw in ["당월", "월말"]):
+            last_day = calendar.monthrange(issue_dt.year, issue_dt.month)[1]
+            return datetime.date(issue_dt.year, issue_dt.month, last_day).strftime('%Y-%m-%d')
+
+    return raw_v
+
+
+def _sanitize_pdf_bytes_if_bloated(raw_bytes):
+    """ezPDF 증분 저장 등으로 삭제된 페이지 찌꺼기가 대량 잔존한 PDF를 전송 전 자동 정제합니다."""
+    if not _pdfium or not raw_bytes or len(raw_bytes) <= 512 * 1024:
+        return raw_bytes
+    try:
+        if len(re.findall(rb'/Type\s*/Page\b', raw_bytes)) <= 50:
+            return raw_bytes
+        src_doc = _pdfium.PdfDocument(raw_bytes)
+        try:
+            page_cnt = len(src_doc)
+            if page_cnt == 0 or page_cnt > 50:
+                return raw_bytes
+            dst_doc = _pdfium.PdfDocument.new()
+            try:
+                dst_doc.import_pages(src_doc)
+                buf = BytesIO()
+                dst_doc.save(buf)
+                cleaned = buf.getvalue()
+                if cleaned and len(cleaned) < len(raw_bytes):
+                    return cleaned
+            finally:
+                dst_doc.close()
+        finally:
+            src_doc.close()
+    except Exception:
+        pass
+    return raw_bytes
+
+
+def _normalize_ai_extraction(raw_data, model_name=""):
+    """AI 원본 추출(문서별 견적서목록)을 파이썬 규칙으로 검산·정리해 최종 스키마로 변환합니다."""
+    if not isinstance(raw_data, dict):
+        return raw_data
+    if "견적서목록" not in raw_data:
+        return raw_data
+
+    reg_name = str(raw_data.get("사업자등록증_상호명") or "").strip()
+    reg_biz = _format_bizno_10(raw_data.get("사업자등록증_등록번호") or "")
+    reg_rep = str(raw_data.get("사업자등록증_대표자명") or "").strip()
+
+    bank_holder = re.sub(r'\s+님\s*$', '', str(raw_data.get("통장사본_예금주") or "").strip()).strip()
+    bank_acc = str(raw_data.get("통장사본_계좌번호") or "").strip()
+    bank_name = str(raw_data.get("통장사본_은행명") or "").strip()
+
+    raw_quotes = raw_data.get("견적서목록") or []
+    quotes = []
+    for q in raw_quotes:
+        if not isinstance(q, dict):
+            continue
+        q_items = []
+        item_sum = 0
+        for itm in (q.get("품목리스트") or []):
+            if not isinstance(itm, dict):
+                continue
+            qty = safe_int(itm.get("수량", 0))
+            up = safe_int(itm.get("단가", 0))
+            amt = safe_int(itm.get("금액", 0))
+            if amt == 0 and qty > 0 and up > 0:
+                amt = qty * up
+            item_sum += amt
+            q_items.append({
+                "품명": str(itm.get("품명") or "").strip(),
+                "수량": qty or 1,
+                "단가": up,
+                "금액": amt,
+            })
+
+        supply = safe_int(q.get("공급가액", 0))
+        vat = safe_int(q.get("부가세", 0))
+        total = safe_int(q.get("총금액", 0))
+
+        # 부가세가 명시되어 있는데 총금액이 0이거나 공급가액만 들어온 경우 자동 보정
+        if supply > 0 and vat > 0:
+            if total == 0 or abs(total - supply) <= 10:
+                total = supply + vat
+        elif total == 0:
+            total = supply if supply > 0 else item_sum
+
+        q_email = str(q.get("이메일") or "").strip()
+        if is_internal_sejong_email(q_email):
+            q_email = ""
+
+        quotes.append({
+            "업체명": str(q.get("업체명") or "").strip(),
+            "사업자번호": _format_bizno_10(q.get("사업자번호") or ""),
+            "대표자명": str(q.get("대표자명") or "").strip(),
+            "담당자": str(q.get("담당자") or "").strip(),
+            "연락처": str(q.get("연락처") or "").strip(),
+            "이메일": q_email,
+            "수신자": str(q.get("수신자") or "").strip(),
+            "발행일자": str(q.get("발행일자") or "").strip(),
+            "유효기간문구": str(q.get("유효기간문구") or "").strip(),
+            "제출금액": total,
+            "품목리스트": q_items,
+        })
+
+    # 1. 비교견적리스트 및 최저가 업체 결정론적 선정
+    valid_quotes = [q for q in quotes if q["제출금액"] > 0]
+    lowest = min(valid_quotes, key=lambda x: x["제출금액"]) if valid_quotes else (quotes[0] if quotes else {})
+
+    comp_list = [
+        {"업체명": q["업체명"], "사업자번호": q["사업자번호"], "제출금액": q["제출금액"]}
+        for q in quotes
+    ]
+    if len(quotes) >= 2 and lowest:
+        comp_desc = ", ".join([f"{q['업체명']}({q['제출금액']:,}원)" for q in quotes])
+        lowest_reason = f"{comp_desc} 중 가장 낮은 금액을 제시한 {lowest['업체명']}({lowest['제출금액']:,}원) 선정"
+    elif lowest:
+        lowest_reason = f"단일견적: {lowest['업체명']}({lowest['제출금액']:,}원)"
+    else:
+        lowest_reason = "견적서 미검출"
+
+    # 2. 수신자명 확인 (모든 견적서에 세종대학교 산학협력단 명의 포함 여부)
+    if not quotes:
+        recv_check = "미검출"
+    else:
+        bad_recvs = []
+        for q in quotes:
+            r_clean = re.sub(r'\s+', '', q["수신자"])
+            has_sejong = "세종대" in r_clean
+            has_iacf = ("산학협력단" in r_clean) or ("산단" in r_clean)
+            if not (has_sejong and has_iacf):
+                bad_recvs.append(f"{q['업체명'] or '견적서'}: '{q['수신자'] or '미기재'}'")
+        recv_check = "예" if not bad_recvs else f"아니오({', '.join(bad_recvs)})"
+
+    # 3. 유효기간 만료일자 계산
+    exp_date_str = _compute_expiry_date(lowest.get("발행일자", ""), lowest.get("유효기간문구", "")) if lowest else "무기한"
+
+    # 4. 사업자등록증 ↔ 최저가 견적서 일치 검증
+    if not reg_biz and not reg_name:
+        biz_match_str = "확인불가(사업자등록증 미검출)"
+    elif not lowest:
+        biz_match_str = "확인불가(견적서 미검출)"
+    else:
+        reg_digits = re.sub(r'[^\d]', '', reg_biz)
+        q_digits = re.sub(r'[^\d]', '', lowest.get("사업자번호", ""))
+        if len(reg_digits) == 10 and len(q_digits) == 10:
+            if reg_digits == q_digits:
+                biz_match_str = "예"
+            else:
+                biz_match_str = f"아니오(견적서 {lowest['사업자번호']} ≠ 사업자등록증 {reg_biz})"
+        else:
+            v_reg = _vendor_name_variants(reg_name)
+            v_q = _vendor_name_variants(lowest.get("업체명", ""))
+            if v_reg and v_q and (v_reg & v_q or any(a in b or b in a for a in v_reg for b in v_q)):
+                biz_match_str = "예"
+            else:
+                biz_match_str = f"아니오(견적서 '{lowest.get('업체명', '')}' ≠ 사업자등록증 '{reg_name}')"
+
+    # 5. 동일규격확인 / 공사확인서유무 정규화
+    raw_spec = str(raw_data.get("동일규격확인") or "").strip()
+    if len(quotes) == 1:
+        spec_check = "단일견적"
+    elif not raw_spec or raw_spec in ("확인", "일치", "동일", "예"):
+        spec_check = "예"
+    else:
+        spec_check = raw_spec
+
+    raw_const = str(raw_data.get("공사확인서유무") or "").strip()
+    if raw_const in ("예", "있음", "첨부", "포함"):
+        const_check = "예"
+    elif raw_const in ("아니오", "없음", "미첨부", ""):
+        const_check = "아니오"
+    else:
+        const_check = "확인요망"
+
+    return {
+        "사업자등록증_상호명": reg_name or lowest.get("업체명", ""),
+        "사업자등록증_등록번호": reg_biz or lowest.get("사업자번호", ""),
+        "사업자등록증_대표자명": reg_rep or lowest.get("대표자명", ""),
+        "통장사본_예금주": bank_holder,
+        "통장사본_계좌번호": bank_acc,
+        "통장사본_은행명": bank_name,
+        "업체명": reg_name or lowest.get("업체명", ""),
+        "사업자번호": reg_biz or lowest.get("사업자번호", ""),
+        "대표자명": reg_rep or lowest.get("대표자명", ""),
+        "담당자": lowest.get("담당자", ""),
+        "연락처": lowest.get("연락처", ""),
+        "이메일": lowest.get("이메일", ""),
+        "예금주": bank_holder,
+        "계좌번호": bank_acc,
+        "비교견적리스트": comp_list,
+        "최저가판단과정": lowest_reason,
+        "수신자명확인": recv_check,
+        "만료일자": exp_date_str,
+        "동일규격확인": spec_check,
+        "사업자일치여부": biz_match_str,
+        "총금액": lowest.get("제출금액", 0),
+        "공사확인서유무": const_check,
+        "품목리스트": lowest.get("품목리스트", []),
+        "_ai_model_used": model_name,
+    }
+
+
 def run_ai_analysis(files, req_type):
     today_str = now_kst().strftime('%Y-%m-%d')
     
@@ -1326,43 +1697,23 @@ def run_ai_analysis(files, req_type):
         extra_instruction = "🚨 이 건은 '공사' 건입니다. 첨부 서류 중 '시설공사 확인서' 또는 '장비설치 확인서'가 반드시 포함되어야 하므로 이를 꼼꼼히 확인하세요.\n"
     
     contents = [
-        f"🚨 [기준일] 오늘 날짜는 {today_str}입니다. 만료일자 계산 시 참고하세요.\n",
+        f"🚨 [기준일] 오늘 날짜는 {today_str}입니다.\n",
         f"{extra_instruction}",
-        """아래 지침에 따라 첨부된 문서들을 분석하고, 반드시 순수한 JSON 형식으로만 응답해. 절대 마크다운(```json)이나 다른 설명 텍스트를 넣지 마.
+        """아래 지침에 따라 첨부된 문서들의 원본 사실을 정확히 추출해 지정된 JSON 스키마로 응답해.
 
 ■ [문서 자동 판별 및 추출 원칙 (파일명 무관)]:
 1. 첨부 파일명이 'ㅅㄷ', 'ㅌㅅ', '1', '스캔' 등 임의의 이름이더라도, 파일 본문의 양식/텍스트를 직접 보고 문서 역할을 구분할 것:
    - [사업자등록증]: 국세청 양식, '등록번호', '법인명(상호)', '대표자', '개업연월일', '사업장소재지' 등이 적힌 서식.
    - [통장사본]: 은행명, 예금주, 계좌번호가 적힌 통장 이미지/사본. (1개 PDF 내 여러 페이지에 사업자등록증과 통장사본이 함께 있는 경우 각 페이지를 개별 판별)
-   - [견적서/비교견적서]: 공급자 정보, 품목, 단가, 공급가액, 세액, 총금액이 적힌 견적 문서.
-   - [기안문/품의서/결재문서]: 대학/기관 내부 기안문, 시행일자, 결재선 등이 있는 문서는 내부 행정서류이므로 견적 비교 대상에서 제외할 것.
-2. [핵심] 첨부 문서 중 '사업자등록증'과 '통장사본' 양식이 단 1장이라도 발견되면, 견적서 최저가 선정 여부와 관계없이 해당 서류 본문의 정보(상호, 사업자번호, 대표자명, 예금주, 계좌번호)를 무조건 독립 추출하여 아래 JSON 필드에 정확히 채울 것.
-
-{
-  "사업자등록증_상호명": "첨부된 사업자등록증 상의 '법인명(단체명)' 또는 '상호' (사업자등록증이 없으면 견적서 상호)",
-  "사업자등록증_등록번호": "첨부된 사업자등록증 상의 사업자등록번호 (반드시 000-00-00000 형식)",
-  "사업자등록증_대표자명": "첨부된 사업자등록증 상의 대표자 성명",
-  "통장사본_예금주": "첨부된 통장사본 상의 예금주명",
-  "통장사본_계좌번호": "첨부된 통장사본 상의 계좌번호",
-  "통장사본_은행명": "첨부된 통장사본 상의 은행명",
-  "업체명": "최종 선정된 업체명 (사업자등록증 상호 우선)",
-  "사업자번호": "최종 선정 업체의 사업자번호 (사업자등록증 번호 우선, 000-00-00000 형식)",
-  "대표자명": "사업자등록증 상의 대표자 성명",
-  "담당자": "최저가 업체의 견적 담당자명",
-  "연락처": "최저가 업체 담당자의 010 전화번호 (없으면 대표번호)",
-  "이메일": "최저가 업체의 이메일",
-  "예금주": "통장사본의 예금주명",
-  "계좌번호": "통장사본의 계좌번호",
-  "비교견적리스트": [ {"업체명": "A업체", "사업자번호": "123-45-67890", "제출금액": 10000}, {"업체명": "B업체", "사업자번호": "987-65-43210", "제출금액": 12000} ],
-  "최저가판단과정": "위 비교견적리스트를 바탕으로 가장 금액이 낮은 업체를 최종 선정하는 과정을 짧게 작성",
-  "수신자명확인": "첨부된 모든 견적서(비교견적서 포함)의 수신자가 모두 '세종대학교 산학협력단' 명의가 맞으면 '예', 하나라도 누락되거나 다르면 '아니오(사유)'",
-  "만료일자": "견적서 본문에 유효기간 만료일(또는 '견적일로부터 N일' 등)이 명시적으로 적혀 있는 경우에만 계산하여 YYYY-MM-DD 형식으로 기재. 본문에 유효기간이 전혀 적혀있지 않거나 유효기간 칸이 비어있는 경우 절대로 30일을 임의로 더하지 말고 반드시 '무기한'으로 기재할 것",
-  "동일규격확인": "복수 견적서 간 동일 물품이면 '예', 다르면 '아니오(사유)', 1장뿐이면 '단일견적'",
-  "사업자일치여부": "최저가 견적서와 사업자등록증 상의 정보가 일치하면 '예', 다르면 '아니오(사유)'",
-  "총금액": "최종 선정된 업체의 견적 총액 (반드시 부가가치세/VAT 포함된 최종 합계 금액을 숫자로만 기재)",
-  "공사확인서유무": "첨부 파일 중 '시설공사' 또는 '장비설치 확인서' 문서가 있으면 '예', 없으면 '아니오', 비슷한 문서가 있으면 '확인요망'",
-  "품목리스트": [ {"품명": "품명 텍스트", "수량": 1, "단가": 1000, "금액": 1000} ]
-}
+   - [견적서/비교견적서]: 공급자 정보, 품목, 단가, 공급가액, 세액, 총금액이 적힌 견적 문서. 모든 견적서를 빠짐없이 '견적서목록'에 각각 분리하여 담을 것.
+   - [기안문/품의서/결재문서]: 대학/기관 내부 기안문, 시행일자, 결재선 등이 있는 문서는 내부 행정서류이므로 견적서목록에서 제외할 것.
+2. [핵심 추출 규칙]:
+   - 사업자등록증/통장사본이 발견되면 견적서와 무관하게 해당 서류 본문의 정보(상호, 사업자번호, 대표자명, 예금주, 계좌번호, 은행명)를 그대로 추출할 것.
+   - 통장사본_예금주에 상호와 대표자 성명이 함께 기재된 경우(예: '대신과학상사 정지섭', '최지운(아이맥스)') 누락 없이 모두 기재할 것.
+   - 각 견적서의 '담당자/연락처/이메일'은 반드시 공급자(업체) 측 정보만 추출하고, 수신자/참조인 측(세종대학교·sejong.ac.kr 등) 연락처·이메일은 절대 넣지 말 것.
+   - 각 견적서의 '공급가액', '부가세', '총금액'(VAT 포함 최종 합계)은 문서에 적힌 그대로 정수로 기재하고, '발행일자'는 YYYY-MM-DD 형식, '유효기간문구'는 적혀 있는 원문 그대로 기재(미기재 시 빈 문자열 "").
+   - '동일규격확인': 복수 견적서 간 동일 물품이면 '예', 다르면 '아니오(사유)', 견적서가 1장뿐이면 '단일견적'.
+   - '공사확인서유무': '시설공사 확인서' 또는 '장비설치 확인서'가 있으면 '예', 없으면 '아니오', 비슷한 문서가 있으면 '확인요망'.
 """
     ]
 
@@ -1385,19 +1736,28 @@ def run_ai_analysis(files, req_type):
                 }]
 
     for idx, f in enumerate(files, 1):
-        if "excel" in f.type or "spreadsheet" in f.type:
-            try: contents.append(f"문서 {idx} (엑셀 파일명: {f.name}):\n{pd.read_excel(f).to_csv(index=False)}")
-            except: pass
+        f_type = (getattr(f, "type", "") or "").lower()
+        f_name = getattr(f, "name", f"문서_{idx}")
+        if "excel" in f_type or "spreadsheet" in f_type or f_name.lower().endswith((".xlsx", ".xls")):
+            try:
+                contents.append(f"문서 {idx} (엑셀 파일명: {f_name}):\n{pd.read_excel(f).to_csv(index=False)}")
+            except Exception:
+                pass
         else:
-            contents.append(f"문서 {idx} (파일명: {f.name})")
-            contents.append(types.Part.from_bytes(data=f.getvalue(), mime_type=f.type))
+            raw_bytes = f.getvalue()
+            mime_type = f_type or ("application/pdf" if f_name.lower().endswith(".pdf") else "application/octet-stream")
+            if mime_type == "application/pdf" or f_name.lower().endswith(".pdf"):
+                mime_type = "application/pdf"
+                raw_bytes = _sanitize_pdf_bytes_if_bloated(raw_bytes)
+            contents.append(f"문서 {idx} (파일명: {f_name})")
+            contents.append(types.Part.from_bytes(data=raw_bytes, mime_type=mime_type))
 
-    gen_config = types.GenerateContentConfig(response_mime_type="application/json")
+    gen_config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=_AIExtractionSchema,
+    )
             
-    fallback_chain = [
-        ("gemini-2.5-flash", 2)
-    ]
-    
+    fallback_chain = AI_FALLBACK_MODELS
     failure_history = []
     
     for model_name, max_retries in fallback_chain:
@@ -1434,9 +1794,10 @@ def run_ai_analysis(files, req_type):
 
                 if resp_text.strip():
                     parsed = safe_json_load(resp_text.strip())
-                    if parsed: 
+                    if parsed:
+                        normalized = _normalize_ai_extraction(parsed, model_name=model_name)
                         log(f"✅ AI 분석 성공: {model_name} (시도 {attempt+1})")
-                        return parsed, []
+                        return normalized, []
                     else: 
                         log(f"⚠️ {attempt_label} JSON 파싱 실패 (응답 텍스트 길이: {len(resp_text)})")
                         failure_history.append({
@@ -1463,7 +1824,10 @@ def run_ai_analysis(files, req_type):
                 lower_err = err_str.lower()
                 if "429" in err_str or "resource_exhausted" in lower_err or "quota" in lower_err or "rate limit" in lower_err:
                     err_type = "QUOTA_EXCEEDED"
-                    summary = "🚨 할당량/한도 초과 (429 RESOURCE_EXHAUSTED): 제미나이 API 분당 요청 수(RPM) 또는 일일 무료 한도에 도달했습니다."
+                    summary = f"🚨 할당량/한도 초과 (429): '{model_name}' 분당 요청 수(RPM) 또는 일일 무료 한도에 도달했습니다."
+                elif "503" in err_str or "unavailable" in lower_err or "high demand" in lower_err:
+                    err_type = "SERVICE_UNAVAILABLE"
+                    summary = f"⏳ 서버 일시 혼잡 (503): '{model_name}' 응답 지연/과부하로 다음 모델로 전환합니다."
                 elif "401" in err_str or "403" in err_str or "permission_denied" in lower_err or "api_key" in lower_err:
                     err_type = "AUTH_ERROR"
                     summary = "🔑 API 인증 실패 (401/403): GEMINI_API_KEY가 유효하지 않거나 권한이 없습니다."
@@ -1488,7 +1852,9 @@ def run_ai_analysis(files, req_type):
                     "error": err_str,
                     "response_text": ""
                 })
-                if err_type in ("AUTH_ERROR", "MODEL_NOT_FOUND", "PAYLOAD_TOO_LARGE", "SAFETY_BLOCKED"):
+                if err_type in ("AUTH_ERROR", "PAYLOAD_TOO_LARGE"):
+                    return None, failure_history
+                if err_type in ("QUOTA_EXCEEDED", "SERVICE_UNAVAILABLE", "MODEL_NOT_FOUND", "SAFETY_BLOCKED"):
                     break
                 if attempt + 1 < max_retries:
                     time.sleep(1)
@@ -2571,7 +2937,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                 '  "사업자등록증_상호명": "첨부된 사업자등록증 상의 \'법인명(단체명)\' 또는 \'상호\' (사업자등록증이 없으면 견적서 상호)",\n'
                 '  "사업자등록증_등록번호": "첨부된 사업자등록증 상의 사업자등록번호 (반드시 000-00-00000 형식)",\n'
                 '  "사업자등록증_대표자명": "첨부된 사업자등록증 상의 대표자 성명",\n'
-                '  "통장사본_예금주": "첨부된 통장사본 상의 예금주명",\n'
+                '  "통장사본_예금주": "첨부된 통장사본 상의 예금주명 (상호와 대표자 성명이 함께 기재된 경우 예: \'대신과학상사 정지섭\', \'최지운(아이맥스)\'처럼 누락 없이 모두 기재)",\n'
                 '  "통장사본_계좌번호": "첨부된 통장사본 상의 계좌번호",\n'
                 '  "통장사본_은행명": "첨부된 통장사본 상의 은행명",\n'
                 '  "업체명": "최종 선정된 업체명 (사업자등록증 상호 우선)",\n'
@@ -2580,7 +2946,7 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                 '  "담당자": "최저가 업체의 견적 담당자명",\n'
                 '  "연락처": "최저가 업체 담당자의 010 전화번호 (없으면 대표번호)",\n'
                 '  "이메일": "최저가 업체의 이메일",\n'
-                '  "예금주": "통장사본의 예금주명",\n'
+                '  "예금주": "통장사본의 예금주명 (상호와 대표자명이 함께 있으면 누락 없이 모두 기재)",\n'
                 '  "계좌번호": "통장사본의 계좌번호",\n'
                 '  "비교견적리스트": [ {"업체명": "A업체", "사업자번호": "123-45-67890", "제출금액": 10000}, {"업체명": "B업체", "사업자번호": "987-65-43210", "제출금액": 12000} ],\n'
                 '  "최저가판단과정": "위 비교견적리스트를 바탕으로 가장 금액이 낮은 업체를 최종 선정하는 과정을 짧게 작성",\n'
@@ -2742,30 +3108,13 @@ if menu in [m_ext, "💰 구매추출기", "구매추출기", "📋 구매요청
                 biz_match = str(ai.get('사업자일치여부', '미검출'))
                 if "아니오" in biz_match: auto_reject_reasons.append("견적서와 사업자등록증 상의 업체 정보 불일치")
 
-                v_name = ai.get('업체명', '')
-                r_name = ai.get('대표자명', '')
-                b_holder = ai.get('예금주', '')
+                v_name = st.session_state.get("req_in_ven") or ai.get('사업자등록증_상호명') or ai.get('업체명', '')
+                r_name = ai.get('사업자등록증_대표자명') or ai.get('대표자명', '')
+                b_holder = st.session_state.get("req_acc_holder") or ai.get('통장사본_예금주') or ai.get('예금주', '')
 
-                cv, cr, cb = clean_name(v_name), clean_name(r_name), clean_name(b_holder)
-                is_corp = any(kw in str(v_name) for kw in ["주식회사", "(주)", "유한회사", "(유)", "Inc", "Ltd"])
-                
-                if cb and cb != "미검출":
-                    sim_v = difflib.SequenceMatcher(None, cv, cb).ratio()
-                    sim_r = difflib.SequenceMatcher(None, cr, cb).ratio()
-                    
-                    if is_corp:
-                        if cb in cv or cv in cb or sim_v >= 0.7: acc_match_res = "✅ 일치 (법인명 예금주 정상)"
-                        else:
-                            acc_match_res = f"🚨 불일치 의심 (예금주: {b_holder} / 법인명: {v_name})"
-                            auto_reject_reasons.append(f"통장 예금주({b_holder})와 법인명({v_name}) 불일치")
-                    else:
-                        if cb in cv or cv in cb or cb in cr or cr in cb or sim_v >= 0.7 or sim_r >= 0.7:
-                            acc_match_res = "✅ 일치 (개인사업자 예금주/대표자 정상)"
-                        else:
-                            acc_match_res = f"🚨 불일치 의심 (예금주: {b_holder} / 업체명: {v_name} / 대표자: {r_name})"
-                            auto_reject_reasons.append(f"통장 예금주({b_holder})와 사업자 명의 불일치")
-                else:
-                    acc_match_res = "⚠️ 통장사본 미검출"
+                acc_match_res, acc_reject_reason = verify_account_holder_match(v_name, r_name, b_holder)
+                if acc_reject_reason:
+                    auto_reject_reasons.append(acc_reject_reason)
 
                 is_const_doc = (req_type == "🏗️ 공사")
                 has_const_doc_file = any("시설공사" in f.name.replace(" ", "") or "장비설치" in f.name.replace(" ", "") for f in up_files) if up_files else False
